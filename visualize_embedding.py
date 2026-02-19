@@ -1,6 +1,7 @@
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import os
 import re
 
@@ -12,15 +13,23 @@ def numerical_sort_key(s):
 def visualize_large_h5(
     file_path, 
     n_samples=20000, 
-    method='umap',  # 'umap', 'tsne', or 'pca'
-    random_state=42
+    method='umap',       # 'umap', 'tsne', or 'pca'
+    random_state=42,
+    feh_classify=False,  # If True: binary red/blue by feh threshold; 
+                         # If False (default): continuous feh heatmap
+    feh_threshold=-2.0,  # Classification boundary (feh > threshold → red, ≤ threshold → blue)
 ):
     """
-    Sample a subset of data from a large H5 file (columnar or 2D) and visualize.
+    Sample a subset of data from a large normalized H5 file (columnar or 2D) and visualize.
+    Also loads the 'feh' column for the sampled indices.
+    - feh_classify=False  → continuous [Fe/H] colorbar heatmap (default)
+    - feh_classify=True   → binary scatter: feh > feh_threshold = red, feh ≤ feh_threshold = blue
     """
     if not os.path.exists(file_path):
         print(f"Error: File '{file_path}' not found.")
         return
+
+    feh_values = None
 
     try:
         with h5py.File(file_path, 'r') as f:
@@ -62,55 +71,90 @@ def visualize_large_h5(
 
             print(f"Total rows: {total_rows}")
 
-            # 2. Random Sampling
-            if total_rows > n_samples:
-                print(f"Sampling {n_samples} indices from {total_rows}...")
-                np.random.seed(random_state)
-                indices = np.random.choice(total_rows, n_samples, replace=False)
-                indices.sort()
+            # Check for feh column
+            has_feh = 'feh' in keys
+            if has_feh:
+                print("Found 'feh' column.")
             else:
-                indices = np.arange(total_rows)
-                print(f"Using all {total_rows} rows.")
+                print("Warning: 'feh' column not found. Skipping feh plot.")
 
-            # 3. Load Data
-            print("Loading data (optimized)...")
+            # 2. Sampling
+            np.random.seed(random_state)
+
+            if feh_classify and has_feh:
+                # ---- Balanced class sampling ----
+                # Read the full feh column first to determine class membership,
+                # then draw k = min(N_blue, n_samples) samples from each class.
+                print("feh_classify=True: loading full feh to build balanced sample...")
+                full_feh = f['feh'][:].astype(np.float64)
+
+                all_idx = np.arange(total_rows)
+                blue_pool = all_idx[full_feh <= feh_threshold]   # feh ≤ threshold
+                red_pool  = all_idx[full_feh >  feh_threshold]   # feh >  threshold
+                N_blue = len(blue_pool)
+                N_red  = len(red_pool)
+                k = min(N_blue, n_samples)
+                print(f"  Blue pool (feh ≤ {feh_threshold}): {N_blue}  |  "
+                      f"Red pool (feh > {feh_threshold}): {N_red}")
+                print(f"  Sampling {k} from each class  (total = {2*k})")
+
+                blue_idx = np.random.choice(blue_pool, k, replace=False)
+                red_idx  = np.random.choice(red_pool,  k, replace=False)
+                indices  = np.concatenate([blue_idx, red_idx])
+                indices.sort()
+
+                # Keep per-sample class labels aligned with indices order
+                # (we'll rebuild from full_feh after sorting)
+                feh_values = full_feh[indices]
+                del full_feh
+
+            else:
+                # ---- Plain random sampling ----
+                if total_rows > n_samples:
+                    print(f"Sampling {n_samples} indices from {total_rows}...")
+                    indices = np.random.choice(total_rows, n_samples, replace=False)
+                    indices.sort()
+                else:
+                    indices = np.arange(total_rows)
+                    print(f"Using all {total_rows} rows.")
+
+            # 3. Load Feature Data
+            print("Loading feature data (optimized)...")
             if is_columnar:
-                # Load each column for the sampled indices
                 data_list = []
                 total_cols = len(feature_cols)
-                
+
                 for i, col_name in enumerate(feature_cols):
                     if i % 10 == 0:
                         print(f"Reading column {i}/{total_cols}: {col_name}...")
-                        
-                    # OPTIMIZATION: 
-                    # H5py random access (fancy indexing) is very slow for large files because it does many seeks.
-                    # Since each column (5M rows) is only ~40MB (float64) or ~20MB (float32), 
-                    # it is MUCH faster to read the whole column sequentially into RAM, sample it, 
-                    # and then discard the full column.
+
+                    # OPTIMIZATION:
+                    # H5py random access (fancy indexing) is very slow for large files.
+                    # Reading the whole column then slicing is much faster.
                     full_col = f[col_name][:]
                     col_data = full_col[indices]
                     data_list.append(col_data)
-                    
-                    # Help GC
                     del full_col
-                
-                # Stack to (n_samples, n_features)
+
                 data_sampled = np.column_stack(data_list)
             else:
-                # 2D dataset case (if it fits in memory, read all then sample)
-                # If it's huge, this might still be slow, but usually 2D chunking is better handled.
-                # For safety, let's try reading all if < 1GB.
-                # 5M * 100 * 8 bytes = 4GB. Might be tight. 
-                # But user case is likely columnar based on previous output.
                 data_sampled = f[dataset_name][:][indices]
 
             print(f"Data shape for visualization: {data_sampled.shape}")
-            
-            # Simple check for NaNs/Infs
+
             if np.isnan(data_sampled).any():
-                print("Warning: NaNs found in data. Filling with 0.")
+                print("Warning: NaNs found in feature data. Filling with 0.")
                 data_sampled = np.nan_to_num(data_sampled)
+
+            # 4. Load feh values (only needed if not already loaded above)
+            if has_feh and feh_values is None:
+                print("Loading feh values for sampled indices...")
+                full_feh = f['feh'][:]
+                feh_values = full_feh[indices].astype(np.float64)
+                del full_feh
+
+            if feh_values is not None:
+                print(f"feh range: [{np.nanmin(feh_values):.3f}, {np.nanmax(feh_values):.3f}]")
 
     except Exception as e:
         print(f"Error processing H5 file: {e}")
@@ -118,7 +162,7 @@ def visualize_large_h5(
         traceback.print_exc()
         return
 
-    # 4. Dimensionality Reduction
+    # 5. Dimensionality Reduction
     print(f"Running {method.upper()}...")
     
     embedding = None
@@ -126,7 +170,8 @@ def visualize_large_h5(
     if method == 'umap':
         try:
             import umap
-            reducer = umap.UMAP(n_components=2, random_state=random_state, n_jobs=-1)
+            reducer = umap.UMAP(n_neighbors=15, # default = 15
+            n_components=2, random_state=random_state, n_jobs=-1)
             embedding = reducer.fit_transform(data_sampled)
         except ImportError:
             print("UMAP not installed. Please run `pip install umap-learn`.")
@@ -147,21 +192,114 @@ def visualize_large_h5(
         print(f"Unknown method: {method}")
         return
 
-    # 5. Plotting
-    plt.figure(figsize=(10, 8))
-    plt.scatter(embedding[:, 0], embedding[:, 1], s=1, alpha=0.5, c='blue')
-    plt.title(f"{method.upper()} projection of {len(indices)} samples")
-    plt.xlabel("Component 1")
-    plt.ylabel("Component 2")
+    # 6. Plotting
+
+    # --- Plot A: plain scatter (blue) ---
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.scatter(embedding[:, 0], embedding[:, 1], s=1, alpha=0.5, c='steelblue')
+    ax.set_title(f"{method.upper()} projection of {len(indices)} samples")
+    ax.set_xlabel("Component 1")
+    ax.set_ylabel("Component 2")
     
     output_img = f"{method}_projection.png"
-    plt.savefig(output_img, dpi=300)
-    print(f"Saved visualization to {output_img}")
+    fig.savefig(output_img, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved plain scatter to {output_img}")
+
+    # --- Plot B: feh-colored scatter ---
+    if feh_values is not None:
+        # Mask out NaN feh entries for coloring
+        valid_mask = np.isfinite(feh_values)
+        n_valid = valid_mask.sum()
+        n_nan   = (~valid_mask).sum()
+        if n_nan > 0:
+            print(f"  {n_nan} samples have NaN feh — they will be shown in grey.")
+
+        fig, ax = plt.subplots(figsize=(11, 9))
+
+        # Plot NaN-feh points in grey first (background)
+        if n_nan > 0:
+            ax.scatter(
+                embedding[~valid_mask, 0], embedding[~valid_mask, 1],
+                s=1, alpha=0.3, c='lightgrey', label='feh = NaN'
+            )
+
+        if feh_classify:
+            # ---- Binary classification mode ----
+            above = valid_mask & (feh_values >  feh_threshold)
+            below = valid_mask & (feh_values <= feh_threshold)
+            n_above = above.sum()
+            n_below = below.sum()
+            print(f"  feh > {feh_threshold}: {n_above} (red),  "
+                  f"feh ≤ {feh_threshold}: {n_below} (blue)")
+
+            # Plot metal-rich (red) on top so rare metal-poor stand out
+            ax.scatter(
+                embedding[below, 0], embedding[below, 1],
+                s=2, alpha=0.5, c='royalblue',
+                label=f'[Fe/H] ≤ {feh_threshold}  (n={n_below})',
+            )
+            ax.scatter(
+                embedding[above, 0], embedding[above, 1],
+                s=2, alpha=0.5, c='crimson',
+                label=f'[Fe/H] > {feh_threshold}  (n={n_above})',
+            )
+
+            ax.legend(markerscale=4, fontsize=11, loc='best')
+            ax.set_title(
+                f"{method.upper()} projection of {len(indices)} samples\n"
+                f"[Fe/H] classification  (threshold = {feh_threshold})",
+                fontsize=13
+            )
+
+            feh_img = f"{method}_feh_classify.png"
+
+        else:
+            # ---- Continuous heatmap mode ----
+            vmin = np.nanpercentile(feh_values, 1)
+            vmax = np.nanpercentile(feh_values, 99)
+            sc = ax.scatter(
+                embedding[valid_mask, 0], embedding[valid_mask, 1],
+                s=1, alpha=0.6,
+                c=feh_values[valid_mask],
+                cmap='RdYlBu',   # blue = metal-poor, red = metal-rich
+                vmin=vmin, vmax=vmax
+            )
+
+            cbar = fig.colorbar(sc, ax=ax, pad=0.01)
+            cbar.set_label('[Fe/H]', fontsize=13)
+
+            if n_nan > 0:
+                ax.legend(markerscale=5, fontsize=10, loc='best')
+
+            ax.set_title(
+                f"{method.upper()} projection of {len(indices)} samples\n"
+                f"colored by [Fe/H]  (valid: {n_valid}, NaN: {n_nan})",
+                fontsize=13
+            )
+
+            feh_img = f"{method}_feh_heatmap.png"
+
+        ax.set_xlabel("Component 1", fontsize=12)
+        ax.set_ylabel("Component 2", fontsize=12)
+
+        fig.savefig(feh_img, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved feh plot to {feh_img}")
+
 
 if __name__ == "__main__":
-    TARGET_FILE = './bp_rp_lamost.h5'
+    TARGET_FILE = './bp_rp_lamost_normalized.h5'
     
     if os.path.exists(TARGET_FILE):
-        visualize_large_h5(TARGET_FILE, n_samples=20000, method='pca')
+        # feh_classify=False  → continuous [Fe/H] heatmap (default)
+        # feh_classify=True   → binary red/blue by feh_threshold
+        visualize_large_h5(
+            TARGET_FILE,
+            n_samples=20000,
+            method='tsne',
+            feh_classify=True,
+            feh_threshold=-2.0,
+        )
     else:
         print(f"File {TARGET_FILE} not found.")
