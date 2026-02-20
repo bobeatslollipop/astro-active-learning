@@ -1,7 +1,7 @@
 ## Training Linear Classifier
 To train the model with default settings:
 ```bash
-python linear_classifier.py --run-name default_run --seed 42 --file-path ./bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1 --optimizer adam --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 1.0 --weight-decay 0.0 --momentum 0.0 --use-ebv
+python linear_classifier.py --run-name default_run --seed 42 --file-path ./bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1 --optimizer adam --lr 1.0 --epochs 50 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 1.0 --weight-decay 0.0 --momentum 0.0 --use-ebv
 ```
 
 All outputs (weights, loss plots, and evaluation confusion matrices) will be saved in the `linear_{run_name}` directory.

@@ -131,10 +131,7 @@ def visualize_large_h5(
                     # OPTIMIZATION:
                     # H5py random access (fancy indexing) is very slow for large files.
                     # Reading the whole column then slicing is much faster.
-                    full_col = f[col_name][:]
-                    col_data = full_col[indices]
-                    data_list.append(col_data)
-                    del full_col
+                    data_list.append(f[col_name][:][indices])
 
                 data_sampled = np.column_stack(data_list)
             else:
@@ -242,8 +239,7 @@ def visualize_large_h5(
 
     # Create output directory
     output_dir = 'data_visualization'
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
 
     # --- Plot B: feh-colored scatter ---
     if feh_values is not None:
