@@ -24,10 +24,12 @@ class LinearClassifier(nn.Module):
 
 def main():
     parser = argparse.ArgumentParser(description="Train a classifier on stellar data.")
-    parser.add_argument('--device', type=str, default=None, help="Device to use (e.g., 'cuda', 'cpu', 'mps'). If None, auto-detects.")
-    parser.add_argument('--list-hardware', action='store_true', help="List available hardware (GPUs) and exit.")
-    parser.add_argument('--no-tf32', action='store_true', help="Disable TF32 matrix multiplication on Ampere+ GPUs.")
-    parser.add_argument('--compile', action='store_true', help="Use torch.compile() for faster training.")
+    p_add = parser.add_argument
+    p_add('--device', type=str, default=None, help="Device to use ('cuda', 'cpu', 'mps')")
+    p_add('--list-hardware', action='store_true', help="List available hardware and exit.")
+    p_add('--no-tf32', action='store_true', help="Disable TF32 for Ampere+ GPUs.")
+    p_add('--compile', action='store_true', help="Use torch.compile().")
+    p_add('--use-ebv', action='store_true', help="Include 'ebv' column as a feature.")
     args = parser.parse_args()
 
     # --- Hardware Search / List ---
@@ -55,30 +57,10 @@ def main():
         print(f"\nCPU Threads: {torch.get_num_threads()}")
         return
 
-    # ============================================================
-    # Hyperparameters — edit here
-    # ============================================================
-    cfg = dict(
-        seed          = 42,
-        # --- data ---
-        file_path     = './bp_rp_lamost_normalized.h5',
-        feh_threshold = -2.0,       # split point: MP < threshold <= MR
-        train_frac    = 0.8,        # fraction of MP used for training
-        mr_ratio      = 2,          # MR samples per MP sample
-        # --- model ---
-        hidden_dim    = 2,
-        # --- training ---
-        optimizer     = 'adam',      # 'sgd' | 'adam'
-        lr            = 1,       # initial learning rate
-        momentum      = 0,        # SGD momentum (ignored for Adam)
-        weight_decay  = 0,        # L2 regularization weight
-        epochs        = 500,
-        batch_size    = 30000,       # Increased for better throughput on small model
-        lr_end_factor = 1,       # final lr = lr * lr_end_factor (LinearLR)
-    )
-    # ============================================================
+    cfg = {'seed': 42, 'file_path': './bp_rp_lamost_normalized.h5', 'feh_threshold': -2.0,
+           'train_frac': 0.8, 'mr_ratio': 2, 'hidden_dim': 2, 'optimizer': 'adam', 'lr': 1,
+           'momentum': 0, 'weight_decay': 0, 'epochs': 500, 'batch_size': 30000, 'lr_end_factor': 1}
 
-    # 1. Fix random seed
     np.random.seed(cfg['seed'])
     torch.manual_seed(cfg['seed'])
     if torch.cuda.is_available():
@@ -96,6 +78,8 @@ def main():
         bp_cols = sorted([k for k in keys if k.startswith('bp_')], key=numerical_sort_key)
         rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
         feature_cols = bp_cols + rp_cols
+        if args.use_ebv:
+            feature_cols.append('ebv')
         
         full_feh = f['feh'][:].astype(np.float64)
         valid_mask = np.isfinite(full_feh)
@@ -178,11 +162,26 @@ def main():
     # --- Optimization: Pre-normalize Data ---
     # L2-normalize input features once here instead of in every forward pass
     print("Pre-normalizing data (L2)...")
-    train_norms = np.linalg.norm(X_train, axis=1, keepdims=True)
-    X_train = X_train / (train_norms + 1e-8)
-    
-    test_norms = np.linalg.norm(X_test, axis=1, keepdims=True)
-    X_test = X_test / (test_norms + 1e-8)
+    if args.use_ebv:
+        # ebv is the last column, do not normalize it
+        X_train_to_norm = X_train[:, :-1]
+        X_test_to_norm = X_test[:, :-1]
+        ebv_train = X_train[:, -1:]
+        ebv_test = X_test[:, -1:]
+        
+        train_norms = np.linalg.norm(X_train_to_norm, axis=1, keepdims=True)
+        X_train_normed = X_train_to_norm / (train_norms + 1e-8)
+        X_train = np.hstack([X_train_normed, ebv_train])
+        
+        test_norms = np.linalg.norm(X_test_to_norm, axis=1, keepdims=True)
+        X_test_normed = X_test_to_norm / (test_norms + 1e-8)
+        X_test = np.hstack([X_test_normed, ebv_test])
+    else:
+        train_norms = np.linalg.norm(X_train, axis=1, keepdims=True)
+        X_train = X_train / (train_norms + 1e-8)
+        
+        test_norms = np.linalg.norm(X_test, axis=1, keepdims=True)
+        X_test = X_test / (test_norms + 1e-8)
 
     # --- Device Selection & Optimization ---
     if args.device:
@@ -288,26 +287,20 @@ def main():
         train_losses.append(epoch_train_loss)
 
         # ---- Eval pass: test loss + accuracy + precision/recall ----
-        epoch_test_loss = 0.0
-        # Confusion matrix counters for class 0 (MP) and class 1 (MR)
-        TP0 = FP0 = FN0 = 0   # positive = class 0 (MP)
-        TP1 = FP1 = FN1 = 0   # positive = class 1 (MR)
-        correct_test = 0
+        epoch_test_loss, correct_test = 0.0, 0
+        TP0 = FP0 = FN0 = TP1 = FP1 = FN1 = 0
         with torch.no_grad():
             for batch_x, batch_y in test_loader:
-                # batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 out = model(batch_x)
                 epoch_test_loss += criterion(out, batch_y).item() * batch_x.size(0)
-                preds = (out > 0.0).float()          # 1 = MR, 0 = MP
+                preds = (out > 0.0).float()
                 correct_test += (preds == batch_y).sum().item()
-                # class 0 (MP): predicted 0, label 0
-                TP0 += ((preds == 0) & (batch_y == 0)).sum().item()
-                FP0 += ((preds == 0) & (batch_y == 1)).sum().item()
-                FN0 += ((preds == 1) & (batch_y == 0)).sum().item()
-                # class 1 (MR): predicted 1, label 1
-                TP1 += ((preds == 1) & (batch_y == 1)).sum().item()
-                FP1 += ((preds == 1) & (batch_y == 0)).sum().item()
-                FN1 += ((preds == 0) & (batch_y == 1)).sum().item()
+                
+                y_0 = (batch_y == 0); p_0 = (preds == 0)
+                y_1 = (batch_y == 1); p_1 = (preds == 1)
+                
+                TP0 += (p_0 & y_0).sum().item(); FP0 += (p_0 & y_1).sum().item(); FN0 += (p_1 & y_0).sum().item()
+                TP1 += (p_1 & y_1).sum().item(); FP1 += (p_1 & y_0).sum().item(); FN1 += (p_0 & y_1).sum().item()
 
         epoch_test_loss /= len(test_dataset)
         test_acc = correct_test / len(test_dataset)
@@ -348,6 +341,8 @@ def main():
     
     fig.tight_layout()
     out_img = 'train_test_loss.png'
+    if args.use_ebv:
+        out_img = 'train_test_loss_ebv.png'
     fig.savefig(out_img, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"Training complete. Loss curve saved to {out_img}")
@@ -358,12 +353,16 @@ def main():
     weights = model.fc.weight.detach().cpu().numpy().flatten()
     bias = model.fc.bias.detach().cpu().item()
     
-    with open('linear_model_weights.csv', 'w') as f:
+    out_csv = 'linear_model_weights.csv'
+    if args.use_ebv:
+        out_csv = 'linear_model_weights_ebv.csv'
+
+    with open(out_csv, 'w') as f:
         f.write("feature,weight\n")
         f.write(f"BIAS,{bias}\n")
         for name, w in zip(feature_cols, weights):
             f.write(f"{name},{w}\n")
-    print(f"Weights saved to linear_model_weights.csv (Total features: {len(feature_cols)})")
+    print(f"Weights saved to {out_csv} (Total features: {len(feature_cols)})")
 
 if __name__ == "__main__":
     main()

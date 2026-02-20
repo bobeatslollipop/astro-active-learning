@@ -1,17 +1,10 @@
-import h5py
+import h5py, os, re, argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import os
-import re
-import argparse
 
-# Try importing RAPIDS cuML for GPU acceleration
-try:
-    import cuml
-    HAS_CUDA = True
-except ImportError:
-    HAS_CUDA = False
+try: import cuml; HAS_CUDA = True
+except ImportError: HAS_CUDA = False
 
 def numerical_sort_key(s):
     """Sort strings with embedded numbers numerically."""
@@ -46,27 +39,16 @@ def visualize_large_h5(
             
             # 1. Detect Data Structure
             keys = list(f.keys())
-            bp_cols = [k for k in keys if k.startswith('bp_')]
-            rp_cols = [k for k in keys if k.startswith('rp_')]
-            
-            # Sort columns numerically (e.g., bp_2 comes after bp_1, not after bp_10)
-            bp_cols.sort(key=numerical_sort_key)
-            rp_cols.sort(key=numerical_sort_key)
-            
+            bp_cols = sorted((k for k in keys if k.startswith('bp_')), key=numerical_sort_key)
+            rp_cols = sorted((k for k in keys if k.startswith('rp_')), key=numerical_sort_key)
             feature_cols = bp_cols + rp_cols
             
             if feature_cols:
                 print(f"Found {len(feature_cols)} feature columns (bp_*/rp_*).")
-                # Assume all have same length, check first one
                 total_rows = f[feature_cols[0]].shape[0]
                 is_columnar = True
             else:
-                # Fallback: look for a single 2D dataset
-                dataset_name = None
-                def find_first_2d(name, obj):
-                    if isinstance(obj, h5py.Dataset) and len(obj.shape) == 2:
-                        return name
-                dataset_name = f.visititems(find_first_2d)
+                dataset_name = f.visititems(lambda n, o: n if isinstance(o, h5py.Dataset) and len(o.shape) == 2 else None)
                 
                 if dataset_name:
                     dset = f[dataset_name]
@@ -187,38 +169,27 @@ def visualize_large_h5(
     if method == 'umap':
         if HAS_CUDA:
             print("Using cuML UMAP (GPU)...")
-            # cuML UMAP signature is very similar to umap-learn
-            reducer = cuml.UMAP(n_neighbors=15, n_components=2, random_state=random_state)
-            embedding = reducer.fit_transform(data_sampled)
+            embedding = cuml.UMAP(n_neighbors=15, n_components=2, random_state=random_state).fit_transform(data_sampled)
         else:
             try:
                 import umap
-                reducer = umap.UMAP(n_neighbors=15, # default = 15
-                n_components=2, random_state=random_state, n_jobs=-1)
-                embedding = reducer.fit_transform(data_sampled)
+                embedding = umap.UMAP(n_neighbors=15, n_components=2, random_state=random_state, n_jobs=-1).fit_transform(data_sampled)
             except ImportError:
                 print("UMAP not installed. Please run `pip install umap-learn`.")
                 return
-            
     elif method == 'tsne':
         if HAS_CUDA:
             print("Using cuML t-SNE (GPU)...")
-            # cuML t-SNE
-            tsne = cuml.TSNE(n_components=2, random_state=random_state, method='fft')
-            embedding = tsne.fit_transform(data_sampled)
+            embedding = cuml.TSNE(n_components=2, random_state=random_state, method='fft').fit_transform(data_sampled)
         else:
             from sklearn.manifold import TSNE
-            tsne = TSNE(n_components=2, random_state=random_state, init='pca', learning_rate='auto')
-            embedding = tsne.fit_transform(data_sampled)
-        
+            embedding = TSNE(n_components=2, random_state=random_state, init='pca', learning_rate='auto').fit_transform(data_sampled)
     elif method == 'pca':
         if HAS_CUDA:
             print("Using cuML PCA (GPU)...")
             pca = cuml.PCA(n_components=2)
             embedding = pca.fit_transform(data_sampled)
-            # cuML PCA usually has explained_variance_ratio_ attribute too
-            if hasattr(pca, 'explained_variance_ratio_'):
-                print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
+            if hasattr(pca, 'explained_variance_ratio_'): print(f"Explained variance: {pca.explained_variance_ratio_}")
         else:
             from sklearn.decomposition import PCA
             pca = PCA(n_components=2)
@@ -330,15 +301,14 @@ def visualize_large_h5(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Visualize embedding from H5 file.")
-    parser.add_argument("--file", type=str, default='./bp_rp_lamost_normalized.h5', help="Path to input H5 file")
-    parser.add_argument("--n_samples", type=int, default=20000, help="Number of samples (base/blue count)")
-    parser.add_argument("--method", type=str, default='pca', choices=['umap', 'tsne', 'pca'], help="Projection method")
-    parser.add_argument("--threshold", type=float, default=-2.0, help="FEH threshold")
-    parser.add_argument("--continuous", action="store_true", help="Use continuous heatmap instead of binary class")
-    parser.add_argument("--ratio", type=float, default=1.0, help="Ratio of Red samples to Blue samples")
-
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Visualize embedding from H5 file.")
+    p.add_argument("--file", type=str, default='./bp_rp_lamost_normalized.h5', help="Path to input")
+    p.add_argument("--n_samples", type=int, default=20000)
+    p.add_argument("--method", type=str, default='pca', choices=['umap', 'tsne', 'pca'])
+    p.add_argument("--threshold", type=float, default=-2.0)
+    p.add_argument("--continuous", action="store_true", help="Continuous heatmap")
+    p.add_argument("--ratio", type=float, default=1.0, help="Red to Blue ratio")
+    args = p.parse_args()
     
     TARGET_FILE = args.file
     

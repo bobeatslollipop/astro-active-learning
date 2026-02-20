@@ -3,28 +3,24 @@ import numpy as np
 import csv
 import re
 import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--use-ebv', action='store_true', help="Evaluate model with 'ebv' feature.")
+args = parser.parse_args()
 
 def numerical_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
 
 print("Loading weights...")
-features_in_weights = []
-weights_list = []
-bias = 0.0
-
-with open('linear_model_weights.csv', 'r') as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        feature = row['feature']
-        weight = float(row['weight'])
-        if feature == 'BIAS':
-            bias = weight
-        else:
-            features_in_weights.append(feature)
-            weights_list.append(weight)
-
-weights = np.array(weights_list)
+weights_file = 'linear_model_weights_ebv.csv' if args.use_ebv else 'linear_model_weights.csv'
+with open(weights_file, 'r') as f:
+    rows = list(csv.DictReader(f))
+bias = float(next(r['weight'] for r in rows if r['feature'] == 'BIAS'))
+features_in_weights = [r['feature'] for r in rows if r['feature'] != 'BIAS']
+weights = np.array([float(r['weight']) for r in rows if r['feature'] != 'BIAS'])
 
 print("Loading dataset...")
 file_path = 'bp_rp_lamost_normalized.h5'
@@ -33,9 +29,12 @@ with h5py.File(file_path, 'r') as f:
     bp_cols = sorted([k for k in keys if k.startswith('bp_')], key=numerical_sort_key)
     rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
     feature_cols = bp_cols + rp_cols
+    norm_cols = set(feature_cols) # Only these columns will be normalized
+    if args.use_ebv:
+        feature_cols.append('ebv')
     
     # Check that the columns match exactly
-    assert features_in_weights == feature_cols
+    assert features_in_weights == feature_cols, f"Feature mismatch! Weights features: {len(features_in_weights)}, Dataset features: {len(feature_cols)}"
     
     full_feh = f['feh'][:].astype(np.float64)
     valid_mask = np.isfinite(full_feh)
@@ -49,17 +48,12 @@ with h5py.File(file_path, 'r') as f:
     print(f"Total valid samples with Fe/H labels: {len(y_true)}")
     
     # We will compute properties column by column to be extremely memory-efficient
-    print("Computing L2 norms per sample...")
+    print("Computing L2 norms per sample (excluding ebv)...")
     sum_sq = np.zeros(len(y_true), dtype=np.float64)
-    
     for i, col_name in enumerate(feature_cols):
-        if i % 20 == 0:
-            print(f" Computing norm: {i}/{len(feature_cols)} features...")
-        col_data = f[col_name][:]
-        col_valid = col_data[valid_mask]
-        col_valid = np.nan_to_num(col_valid)
-        sum_sq += col_valid ** 2
-        
+        if col_name not in norm_cols: continue
+        if i % 20 == 0: print(f" Computing norm: {i}/{len(feature_cols)} features...")
+        sum_sq += np.nan_to_num(f[col_name][:][valid_mask]) ** 2
     norms = np.sqrt(sum_sq) + 1e-8
     
     # Now compute the linear prediction outputs (logits)
@@ -67,15 +61,12 @@ with h5py.File(file_path, 'r') as f:
     logits = np.zeros(len(y_true), dtype=np.float32) + bias
     
     for i, col_name in enumerate(feature_cols):
-        if i % 20 == 0:
-            print(f" Applying weights: {i}/{len(feature_cols)} features...")
-        col_data = f[col_name][:]
-        col_valid = col_data[valid_mask]
-        col_valid = np.nan_to_num(col_valid)
-        
-        # apply L2 normalization before multiplying by weight
-        col_normed = col_valid / norms
-        logits += col_normed * weights[i]
+        if i % 20 == 0: print(f" Applying weights: {i}/{len(feature_cols)} features...")
+        col_valid = np.nan_to_num(f[col_name][:][valid_mask])
+        if col_name in norm_cols:
+            logits += (col_valid / norms) * weights[i]
+        else:
+            logits += col_valid * weights[i]
 
     y_pred = (logits > 0.0).astype(int)
     
@@ -112,6 +103,6 @@ disp.im_.set_norm(LogNorm(vmin=max(cm.min(), 1), vmax=cm.max()))
 
 plt.title(f'Overall Evaluation (Accuracy: {acc:.2%})')
 plt.tight_layout()
-out_file = 'confusion_matrix_all_data.png'
+out_file = 'confusion_matrix_all_data_ebv.png' if args.use_ebv else 'confusion_matrix_all_data.png'
 plt.savefig(out_file, dpi=300)
 print(f"Saved confusion matrix plot to {out_file}.")
