@@ -4,6 +4,14 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import os
 import re
+import argparse
+
+# Try importing RAPIDS cuML for GPU acceleration
+try:
+    import cuml
+    HAS_CUDA = True
+except ImportError:
+    HAS_CUDA = False
 
 def numerical_sort_key(s):
     """Sort strings with embedded numbers numerically."""
@@ -18,6 +26,7 @@ def visualize_large_h5(
     feh_classify=False,  # If True: binary red/blue by feh threshold; 
                          # If False (default): continuous feh heatmap
     feh_threshold=-2.0,  # Classification boundary (feh > threshold → red, ≤ threshold → blue)
+    red_blue_ratio=2.0,  # Ratio of red to blue samples
 ):
     """
     Sample a subset of data from a large normalized H5 file (columnar or 2D) and visualize.
@@ -44,10 +53,15 @@ def visualize_large_h5(
             bp_cols.sort(key=numerical_sort_key)
             rp_cols.sort(key=numerical_sort_key)
             
-            feature_cols = bp_cols + rp_cols
+            # Add ebv if it exists
+            other_cols = []
+            if 'ebv' in keys:
+                other_cols.append('ebv')
+
+            feature_cols = bp_cols + rp_cols + other_cols
             
             if feature_cols:
-                print(f"Found {len(feature_cols)} feature columns (bp_*/rp_*).")
+                print(f"Found {len(feature_cols)} feature columns (bp_*/rp_*/ebv).")
                 # Assume all have same length, check first one
                 total_rows = f[feature_cols[0]].shape[0]
                 is_columnar = True
@@ -93,13 +107,21 @@ def visualize_large_h5(
                 red_pool  = all_idx[full_feh >  feh_threshold]   # feh >  threshold
                 N_blue = len(blue_pool)
                 N_red  = len(red_pool)
-                k = min(N_blue, n_samples)
+
+                
+                # Calculates max possible blue samples satisfying all constraints:
+                # 1. k_blue <= N_blue
+                # 2. k_blue <= n_samples
+                # 3. k_blue * ratio <= N_red
+                k_blue = min(N_blue, n_samples, int(N_red / red_blue_ratio))
+                k_red = int(k_blue * red_blue_ratio)
+                
                 print(f"  Blue pool (feh ≤ {feh_threshold}): {N_blue}  |  "
                       f"Red pool (feh > {feh_threshold}): {N_red}")
-                print(f"  Sampling {k} from each class  (total = {2*k})")
+                print(f"  Sampling {k_blue} Blue and {k_red} Red (Ratio: {red_blue_ratio})")
 
-                blue_idx = np.random.choice(blue_pool, k, replace=False)
-                red_idx  = np.random.choice(red_pool,  k, replace=False)
+                blue_idx = np.random.choice(blue_pool, k_blue, replace=False)
+                red_idx  = np.random.choice(red_pool,  k_red, replace=False)
                 indices  = np.concatenate([blue_idx, red_idx])
                 indices.sort()
 
@@ -168,25 +190,45 @@ def visualize_large_h5(
     embedding = None
     
     if method == 'umap':
-        try:
-            import umap
-            reducer = umap.UMAP(n_neighbors=15, # default = 15
-            n_components=2, random_state=random_state, n_jobs=-1)
+        if HAS_CUDA:
+            print("Using cuML UMAP (GPU)...")
+            # cuML UMAP signature is very similar to umap-learn
+            reducer = cuml.UMAP(n_neighbors=15, n_components=2, random_state=random_state)
             embedding = reducer.fit_transform(data_sampled)
-        except ImportError:
-            print("UMAP not installed. Please run `pip install umap-learn`.")
-            return
+        else:
+            try:
+                import umap
+                reducer = umap.UMAP(n_neighbors=15, # default = 15
+                n_components=2, random_state=random_state, n_jobs=-1)
+                embedding = reducer.fit_transform(data_sampled)
+            except ImportError:
+                print("UMAP not installed. Please run `pip install umap-learn`.")
+                return
             
     elif method == 'tsne':
-        from sklearn.manifold import TSNE
-        tsne = TSNE(n_components=2, random_state=random_state, init='pca', learning_rate='auto')
-        embedding = tsne.fit_transform(data_sampled)
+        if HAS_CUDA:
+            print("Using cuML t-SNE (GPU)...")
+            # cuML t-SNE
+            tsne = cuml.TSNE(n_components=2, random_state=random_state, method='fft')
+            embedding = tsne.fit_transform(data_sampled)
+        else:
+            from sklearn.manifold import TSNE
+            tsne = TSNE(n_components=2, random_state=random_state, init='pca', learning_rate='auto')
+            embedding = tsne.fit_transform(data_sampled)
         
     elif method == 'pca':
-        from sklearn.decomposition import PCA
-        pca = PCA(n_components=2)
-        embedding = pca.fit_transform(data_sampled)
-        print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
+        if HAS_CUDA:
+            print("Using cuML PCA (GPU)...")
+            pca = cuml.PCA(n_components=2)
+            embedding = pca.fit_transform(data_sampled)
+            # cuML PCA usually has explained_variance_ratio_ attribute too
+            if hasattr(pca, 'explained_variance_ratio_'):
+                print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
+        else:
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=2)
+            embedding = pca.fit_transform(data_sampled)
+            print(f"Explained variance ratio: {pca.explained_variance_ratio_}")
 
     else:
         print(f"Unknown method: {method}")
@@ -289,17 +331,30 @@ def visualize_large_h5(
 
 
 if __name__ == "__main__":
-    TARGET_FILE = './bp_rp_lamost_normalized.h5'
+    parser = argparse.ArgumentParser(description="Visualize embedding from H5 file.")
+    parser.add_argument("--file", type=str, default='./bp_rp_lamost_normalized.h5', help="Path to input H5 file")
+    parser.add_argument("--n_samples", type=int, default=20000, help="Number of samples (base/blue count)")
+    parser.add_argument("--method", type=str, default='tsne', choices=['umap', 'tsne', 'pca'], help="Projection method")
+    parser.add_argument("--threshold", type=float, default=-2.0, help="FEH threshold")
+    parser.add_argument("--continuous", action="store_true", help="Use continuous heatmap instead of binary class")
+    parser.add_argument("--ratio", type=float, default=1.0, help="Ratio of Red samples to Blue samples")
+
+    args = parser.parse_args()
+    
+    TARGET_FILE = args.file
     
     if os.path.exists(TARGET_FILE):
-        # feh_classify=False  → continuous [Fe/H] heatmap (default)
-        # feh_classify=True   → binary red/blue by feh_threshold
+        # feh_classify: True by default unless --continuous is passed (logic inverted for CLI convenience?)
+        # Logic in existing code: feh_classify=True -> binary.
+        # So if we want binary by default, we use feh_classify=not args.continuous
+        
         visualize_large_h5(
             TARGET_FILE,
-            n_samples=20000,
-            method='tsne',
-            feh_classify=True,
-            feh_threshold=-2.0,
+            n_samples=args.n_samples,
+            method=args.method,
+            feh_classify=not args.continuous,
+            feh_threshold=args.threshold,
+            red_blue_ratio=args.ratio,
         )
     else:
         print(f"File {TARGET_FILE} not found.")

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import re
 import os
+import argparse
 
 def numerical_sort_key(s):
     return [int(text) if text.isdigit() else text.lower()
@@ -19,12 +20,44 @@ class L2NormTwoLayerNN(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
-        x = F.normalize(x, p=2, dim=1)   # L2-normalize inputs
-        x = F.relu(self.fc1(x))
+        # x is already L2-normalized during preprocessing
+        x = F.gelu(self.fc1(x))
         x = self.fc2(x)
         return x
 
 def main():
+    parser = argparse.ArgumentParser(description="Train a classifier on stellar data.")
+    parser.add_argument('--device', type=str, default=None, help="Device to use (e.g., 'cuda', 'cpu', 'mps'). If None, auto-detects.")
+    parser.add_argument('--list-hardware', action='store_true', help="List available hardware (GPUs) and exit.")
+    parser.add_argument('--no-tf32', action='store_true', help="Disable TF32 matrix multiplication on Ampere+ GPUs.")
+    parser.add_argument('--compile', action='store_true', help="Use torch.compile() for faster training.")
+    args = parser.parse_args()
+
+    # --- Hardware Search / List ---
+    if args.list_hardware:
+        print("Searching for available hardware...")
+        print(f"PyTorch Version: {torch.__version__}")
+        
+        # Check CUDA
+        if torch.cuda.is_available():
+            count = torch.cuda.device_count()
+            print(f"\nCUDA Available: Yes ({count} devices)")
+            for i in range(count):
+                props = torch.cuda.get_device_properties(i)
+                print(f"  [{i}] {props.name} (VRAM: {props.total_memory / 1024**3:.2f} GB, CC: {props.major}.{props.minor})")
+        else:
+            print("\nCUDA Available: No")
+
+        # Check MPS
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+             print("\nMPS (Apple Silicon) Available: Yes")
+        else:
+             print("\nMPS (Apple Silicon) Available: No")
+
+        # CPU info
+        print(f"\nCPU Threads: {torch.get_num_threads()}")
+        return
+
     # ============================================================
     # Hyperparameters — edit here
     # ============================================================
@@ -36,14 +69,14 @@ def main():
         train_frac    = 0.8,        # fraction of MP used for training
         mr_ratio      = 2,          # MR samples per MP sample
         # --- model ---
-        hidden_dim    = 16,
+        hidden_dim    = 2,
         # --- training ---
         optimizer     = 'sgd',      # 'sgd' | 'adam'
         lr            = 0.03,       # initial learning rate
         momentum      = 0.9,        # SGD momentum (ignored for Adam)
         weight_decay  = 0,        # L2 regularization weight
-        epochs        = 50,
-        batch_size    = 256,
+        epochs        = 500,
+        batch_size    = 256,       # Increased for better throughput on small model
         lr_end_factor = 0.01,       # final lr = lr * lr_end_factor (LinearLR)
     )
     # ============================================================
@@ -144,16 +177,55 @@ def main():
 
     X_train = np.nan_to_num(X_train)
     X_test = np.nan_to_num(X_test)
+    
+    # --- Optimization: Pre-normalize Data ---
+    # L2-normalize input features once here instead of in every forward pass
+    print("Pre-normalizing data (L2)...")
+    train_norms = np.linalg.norm(X_train, axis=1, keepdims=True)
+    X_train = X_train / (train_norms + 1e-8)
+    
+    test_norms = np.linalg.norm(X_test, axis=1, keepdims=True)
+    X_test = X_test / (test_norms + 1e-8)
 
-    X_train_t = torch.tensor(X_train, dtype=torch.float32)
-    X_test_t = torch.tensor(X_test, dtype=torch.float32)
-    y_train_t = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
-    y_test_t = torch.tensor(y_test, dtype=torch.float32).unsqueeze(1)
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    # --- Device Selection & Optimization ---
+    if args.device:
+        device = torch.device(args.device)
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    
     print(f"Using device: {device}")
 
+    if device.type == 'cuda':
+        # Enable CuDNN benchmark for fixed-size inputs (speedup)
+        if torch.backends.cudnn.is_available():
+            print("Enabling CuDNN Benchmark...")
+            torch.backends.cudnn.benchmark = True
+        
+        # Enable TF32 on Ampere+ GPUs
+        if not args.no_tf32 and torch.cuda.get_device_capability(device)[0] >= 8:
+            print("Enabling TF32 for Ampere+ GPUs...")
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            
+    # --- Optimization: Move ALL data to device immediately ---
+    # Since dataset is small (~10MB), we put it all on VRAM/RAM once to avoid 
+    # PCIe transfer overhead during training loop.
+    print(f"Moving data to {device}...")
+    X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
+    X_test_t = torch.tensor(X_test, dtype=torch.float32, device=device)
+    y_train_t = torch.tensor(y_train, dtype=torch.float32, device=device).unsqueeze(1)
+    y_test_t = torch.tensor(y_test, dtype=torch.float32, device=device).unsqueeze(1)
+
     model = L2NormTwoLayerNN(input_dim=len(feature_cols), hidden_dim=cfg['hidden_dim']).to(device)
+    
+    # --- Optimization: torch.compile ---
+    if args.compile:
+        print("Compiling model with torch.compile...")
+        try:
+            model = torch.compile(model)
+        except Exception as e:
+            print(f"Warning: torch.compile failed: {e}")
+    
     criterion = nn.BCEWithLogitsLoss()
 
     if cfg['optimizer'] == 'adam':
@@ -172,6 +244,7 @@ def main():
 
     from torch.utils.data import TensorDataset, DataLoader
 
+    # Data is already on device, so num_workers must be 0
     train_dataset = TensorDataset(X_train_t, y_train_t)
     test_dataset  = TensorDataset(X_test_t,  y_test_t)
 
@@ -197,7 +270,7 @@ def main():
         # ---- Forward + backward pass ----
         model.train()
         for batch_x, batch_y in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            # batch_x, batch_y are already on device
             optimizer.zero_grad()
             out = model(batch_x)
             loss = criterion(out, batch_y)
@@ -211,7 +284,7 @@ def main():
         epoch_train_loss = 0.0
         with torch.no_grad():
             for batch_x, batch_y in train_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                # batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 out = model(batch_x)
                 epoch_train_loss += criterion(out, batch_y).item() * batch_x.size(0)
         epoch_train_loss /= len(train_dataset)
@@ -225,7 +298,7 @@ def main():
         correct_test = 0
         with torch.no_grad():
             for batch_x, batch_y in test_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                # batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 out = model(batch_x)
                 epoch_test_loss += criterion(out, batch_y).item() * batch_x.size(0)
                 preds = (out > 0.0).float()          # 1 = MR, 0 = MP
@@ -274,7 +347,7 @@ def main():
     labs = [l.get_label() for l in lns]
     ax1.legend(lns, labs, fontsize=12, loc='center right')
 
-    plt.title('Train/Test Loss & Test Accuracy of L2-Normalized Two-Layer NN', fontsize=14)
+    plt.title(f"Train/Test Loss & Test Accuracy (width={cfg['hidden_dim']})", fontsize=14)
     
     fig.tight_layout()
     out_img = 'train_test_loss.png'
