@@ -13,17 +13,14 @@ def numerical_sort_key(s):
     return [int(text) if text.isdigit() else text.lower()
             for text in re.split('([0-9]+)', s)]
 
-class L2NormTwoLayerNN(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
+class LinearClassifier(nn.Module):
+    def __init__(self, input_dim):
         super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, 1)
+        self.fc = nn.Linear(input_dim, 1)
 
     def forward(self, x):
         # x is already L2-normalized during preprocessing
-        x = F.gelu(self.fc1(x))
-        x = self.fc2(x)
-        return x
+        return self.fc(x)
 
 def main():
     parser = argparse.ArgumentParser(description="Train a classifier on stellar data.")
@@ -71,13 +68,13 @@ def main():
         # --- model ---
         hidden_dim    = 2,
         # --- training ---
-        optimizer     = 'sgd',      # 'sgd' | 'adam'
-        lr            = 0.03,       # initial learning rate
-        momentum      = 0.9,        # SGD momentum (ignored for Adam)
+        optimizer     = 'adam',      # 'sgd' | 'adam'
+        lr            = 1,       # initial learning rate
+        momentum      = 0,        # SGD momentum (ignored for Adam)
         weight_decay  = 0,        # L2 regularization weight
         epochs        = 500,
-        batch_size    = 256,       # Increased for better throughput on small model
-        lr_end_factor = 0.01,       # final lr = lr * lr_end_factor (LinearLR)
+        batch_size    = 30000,       # Increased for better throughput on small model
+        lr_end_factor = 1,       # final lr = lr * lr_end_factor (LinearLR)
     )
     # ============================================================
 
@@ -216,7 +213,7 @@ def main():
     y_train_t = torch.tensor(y_train, dtype=torch.float32, device=device).unsqueeze(1)
     y_test_t = torch.tensor(y_test, dtype=torch.float32, device=device).unsqueeze(1)
 
-    model = L2NormTwoLayerNN(input_dim=len(feature_cols), hidden_dim=cfg['hidden_dim']).to(device)
+    model = LinearClassifier(input_dim=len(feature_cols)).to(device)
     
     # --- Optimization: torch.compile ---
     if args.compile:
@@ -347,7 +344,7 @@ def main():
     labs = [l.get_label() for l in lns]
     ax1.legend(lns, labs, fontsize=12, loc='center right')
 
-    plt.title(f"Train/Test Loss & Test Accuracy (width={cfg['hidden_dim']})", fontsize=14)
+    plt.title("Train/Test Loss & Test Accuracy (Linear Classifier)", fontsize=14)
     
     fig.tight_layout()
     out_img = 'train_test_loss.png'
@@ -355,6 +352,18 @@ def main():
     plt.close(fig)
     print(f"Training complete. Loss curve saved to {out_img}")
     print(f"Final Test Accuracy: {test_accs[-1]:.4f}")
+
+    # --- Save Weights ---
+    print("Saving model weights...")
+    weights = model.fc.weight.detach().cpu().numpy().flatten()
+    bias = model.fc.bias.detach().cpu().item()
+    
+    with open('linear_model_weights.csv', 'w') as f:
+        f.write("feature,weight\n")
+        f.write(f"BIAS,{bias}\n")
+        for name, w in zip(feature_cols, weights):
+            f.write(f"{name},{w}\n")
+    print(f"Weights saved to linear_model_weights.csv (Total features: {len(feature_cols)})")
 
 if __name__ == "__main__":
     main()

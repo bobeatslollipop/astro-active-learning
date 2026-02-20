@@ -53,15 +53,10 @@ def visualize_large_h5(
             bp_cols.sort(key=numerical_sort_key)
             rp_cols.sort(key=numerical_sort_key)
             
-            # Add ebv if it exists
-            other_cols = []
-            if 'ebv' in keys:
-                other_cols.append('ebv')
-
-            feature_cols = bp_cols + rp_cols + other_cols
+            feature_cols = bp_cols + rp_cols
             
             if feature_cols:
-                print(f"Found {len(feature_cols)} feature columns (bp_*/rp_*/ebv).")
+                print(f"Found {len(feature_cols)} feature columns (bp_*/rp_*).")
                 # Assume all have same length, check first one
                 total_rows = f[feature_cols[0]].shape[0]
                 is_columnar = True
@@ -103,8 +98,8 @@ def visualize_large_h5(
                 full_feh = f['feh'][:].astype(np.float64)
 
                 all_idx = np.arange(total_rows)
-                blue_pool = all_idx[full_feh <= feh_threshold]   # feh ≤ threshold
-                red_pool  = all_idx[full_feh >  feh_threshold]   # feh >  threshold
+                blue_pool = all_idx[full_feh <  feh_threshold]   # feh <  threshold
+                red_pool  = all_idx[full_feh >= feh_threshold]   # feh >= threshold
                 N_blue = len(blue_pool)
                 N_red  = len(red_pool)
 
@@ -116,8 +111,8 @@ def visualize_large_h5(
                 k_blue = min(N_blue, n_samples, int(N_red / red_blue_ratio))
                 k_red = int(k_blue * red_blue_ratio)
                 
-                print(f"  Blue pool (feh ≤ {feh_threshold}): {N_blue}  |  "
-                      f"Red pool (feh > {feh_threshold}): {N_red}")
+                print(f"  Blue pool (feh < {feh_threshold}): {N_blue}  |  "
+                      f"Red pool (feh >= {feh_threshold}): {N_red}")
                 print(f"  Sampling {k_blue} Blue and {k_red} Red (Ratio: {red_blue_ratio})")
 
                 blue_idx = np.random.choice(blue_pool, k_blue, replace=False)
@@ -237,13 +232,17 @@ def visualize_large_h5(
     # 6. Plotting
 
     # --- Plot A: plain scatter (blue) ---
+    output_dir = 'data_visualization'
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.scatter(embedding[:, 0], embedding[:, 1], s=1, alpha=0.5, c='steelblue')
     ax.set_title(f"{method.upper()} projection of {len(indices)} samples")
     ax.set_xlabel("Component 1")
     ax.set_ylabel("Component 2")
     
-    output_img = f"{method}_projection.png"
+    output_img = os.path.join(output_dir, f"{method}_projection.png")
     fig.savefig(output_img, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved plain scatter to {output_img}")
@@ -268,23 +267,23 @@ def visualize_large_h5(
 
         if feh_classify:
             # ---- Binary classification mode ----
-            above = valid_mask & (feh_values >  feh_threshold)
-            below = valid_mask & (feh_values <= feh_threshold)
+            above = valid_mask & (feh_values >= feh_threshold)
+            below = valid_mask & (feh_values <  feh_threshold)
             n_above = above.sum()
             n_below = below.sum()
-            print(f"  feh > {feh_threshold}: {n_above} (red),  "
-                  f"feh ≤ {feh_threshold}: {n_below} (blue)")
+            print(f"  feh >= {feh_threshold}: {n_above} (red),  "
+                  f"feh < {feh_threshold}: {n_below} (blue)")
 
             # Plot metal-rich (red) on top so rare metal-poor stand out
             ax.scatter(
                 embedding[below, 0], embedding[below, 1],
                 s=2, alpha=0.5, c='royalblue',
-                label=f'[Fe/H] ≤ {feh_threshold}  (n={n_below})',
+                label=f'[Fe/H] < {feh_threshold}  (n={n_below})',
             )
             ax.scatter(
                 embedding[above, 0], embedding[above, 1],
                 s=2, alpha=0.5, c='crimson',
-                label=f'[Fe/H] > {feh_threshold}  (n={n_above})',
+                label=f'[Fe/H] >= {feh_threshold}  (n={n_above})',
             )
 
             ax.legend(markerscale=4, fontsize=11, loc='best')
@@ -294,7 +293,7 @@ def visualize_large_h5(
                 fontsize=13
             )
 
-            feh_img = f"{method}_feh_classify.png"
+            feh_img = os.path.join(output_dir, f"{method}_feh_classify.png")
 
         else:
             # ---- Continuous heatmap mode ----
@@ -320,7 +319,7 @@ def visualize_large_h5(
                 fontsize=13
             )
 
-            feh_img = f"{method}_feh_heatmap.png"
+            feh_img = os.path.join(output_dir, f"{method}_feh_heatmap.png")
 
         ax.set_xlabel("Component 1", fontsize=12)
         ax.set_ylabel("Component 2", fontsize=12)
@@ -334,7 +333,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize embedding from H5 file.")
     parser.add_argument("--file", type=str, default='./bp_rp_lamost_normalized.h5', help="Path to input H5 file")
     parser.add_argument("--n_samples", type=int, default=20000, help="Number of samples (base/blue count)")
-    parser.add_argument("--method", type=str, default='tsne', choices=['umap', 'tsne', 'pca'], help="Projection method")
+    parser.add_argument("--method", type=str, default='pca', choices=['umap', 'tsne', 'pca'], help="Projection method")
     parser.add_argument("--threshold", type=float, default=-2.0, help="FEH threshold")
     parser.add_argument("--continuous", action="store_true", help="Use continuous heatmap instead of binary class")
     parser.add_argument("--ratio", type=float, default=1.0, help="Ratio of Red samples to Blue samples")

@@ -40,7 +40,11 @@ def plot_feh_distribution(file_path):
             plt.yscale('log') # Optional log scale could be good, but let's stick to linear first, or just provide both/one
             plt.grid(axis='y', alpha=0.75)
             
-            output_file = 'feh_distribution.png'
+            output_dir = 'data_visualization'
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            
+            output_file = os.path.join(output_dir, 'feh_distribution.png')
             plt.savefig(output_file, dpi=300, bbox_inches='tight')
             plt.close()
             print(f"Histogram saved to {output_file}")

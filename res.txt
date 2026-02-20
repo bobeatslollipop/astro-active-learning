@@ -1,0 +1,20 @@
+ Applying weights: 100/110 features...
+Calculating metrics...
+Overall Accuracy: 96.6241%
+
+--- Results ---
+True MP (< -2): 10,201 samples
+True MR (>= -2): 5,273,361 samples
+------------------------------
+Predicted MP: 187,525 samples
+Predicted MR: 5,096,037 samples
+Overall Accuracy: 96.6241%
+
+Confusion Matrix:
+                 | Pred MP (0) | Pred MR (1)
+--------------------------------------------
+True MP (0)     |        9679 |         522
+True MR (1)     |      177846 |     5095515
+
+Plotting Confusion Matrix...
+Saved confusion matrix plot to confusion_matrix_all_data.png.
