@@ -1,2 +1,7 @@
 *.h5
 .DS_Store
+
+# Ignore all subdirectories except best_model and data_visualization
+/*/
+!/best_model/
+!/data_visualization/

@@ -13,6 +13,116 @@ def numerical_sort_key(s):
     return [int(text) if text.isdigit() else text.lower()
             for text in re.split('([0-9]+)', s)]
 
+def visualize_weights(csv_path, output_img):
+    import csv
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        data = [(row[0], float(row[1])) for row in reader if row and row[0] != 'BIAS']
+            
+    key_fn = lambda x: int(re.search(r'\d+', x[0]).group()) if re.search(r'\d+', x[0]) else 0
+    bp_data = sorted([x for x in data if x[0].startswith('bp_')], key=key_fn)
+    rp_data = sorted([x for x in data if x[0].startswith('rp_')], key=key_fn)
+    other_data = [x for x in data if not (x[0].startswith('bp_') or x[0].startswith('rp_'))]
+    
+    all_data = bp_data + rp_data + other_data
+    all_features = [x[0] for x in all_data]
+    all_weights = [x[1] for x in all_data]
+    bp_len = len(bp_data)
+    rp_len = len(rp_data)
+    
+    fig = plt.figure(figsize=(14, 6))
+    x = np.arange(len(all_features))
+    
+    plt.bar(x[:bp_len], all_weights[:bp_len], label='BP weights', color='blue', alpha=0.7)
+    plt.bar(x[bp_len:bp_len+rp_len], all_weights[bp_len:bp_len+rp_len], label='RP weights', color='red', alpha=0.7)
+    if other_data:
+        plt.bar(x[bp_len+rp_len:], all_weights[bp_len+rp_len:], label='Other weights', color='green', alpha=0.7)
+    
+    plt.axhline(0, color='black', linewidth=1, linestyle='--')
+    plt.xlabel('Features', fontsize=12)
+    plt.ylabel('Weight', fontsize=12)
+    title_suffix = ' (with EBV)' if 'ebv' in all_features else ''
+    plt.title(f'Linear Model Weights for Features{title_suffix}', fontsize=14)
+    
+    plt.xticks(x[::5], [all_features[i] for i in range(0, len(all_features), 5)], rotation=45)
+    
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_img, dpi=300)
+    plt.close(fig)
+    print(f"Plot saved to {output_img}")
+
+def evaluate_all(weights_file, use_ebv, out_dir):
+    import csv
+    from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay
+    print("Evaluating on all data...")
+    with open(weights_file, 'r') as f:
+        rows = list(csv.DictReader(f))
+    bias = float(next(r['weight'] for r in rows if r['feature'] == 'BIAS'))
+    features_in_weights = [r['feature'] for r in rows if r['feature'] != 'BIAS']
+    weights = np.array([float(r['weight']) for r in rows if r['feature'] != 'BIAS'])
+
+    file_path = 'bp_rp_lamost_normalized.h5'
+    with h5py.File(file_path, 'r') as f:
+        keys = list(f.keys())
+        bp_cols = sorted([k for k in keys if k.startswith('bp_')], key=numerical_sort_key)
+        rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
+        feature_cols = bp_cols + rp_cols
+        norm_cols = set(feature_cols) 
+        if use_ebv:
+            feature_cols.append('ebv')
+        
+        full_feh = f['feh'][:].astype(np.float64)
+        valid_mask = np.isfinite(full_feh)
+        feh_valid = full_feh[valid_mask]
+        
+        y_true = (feh_valid >= -2.0).astype(int) 
+        
+        sum_sq = np.zeros(len(y_true), dtype=np.float64)
+        for i, col_name in enumerate(feature_cols):
+            if col_name not in norm_cols: continue
+            sum_sq += np.nan_to_num(f[col_name][:][valid_mask]) ** 2
+        norms = np.sqrt(sum_sq) + 1e-8
+        
+        logits = np.zeros(len(y_true), dtype=np.float32) + bias
+        
+        for i, col_name in enumerate(feature_cols):
+            col_valid = np.nan_to_num(f[col_name][:][valid_mask])
+            if col_name in norm_cols:
+                logits += (col_valid / norms) * weights[i]
+            else:
+                logits += col_valid * weights[i]
+
+        y_pred = (logits > 0.0).astype(int)
+        
+    acc = accuracy_score(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred)
+    
+    print(f"Overall Accuracy on all data: {acc:.4%}\n")
+    print("Confusion Matrix:")
+    print("                 | Pred MP (0) | Pred MR (1)")
+    print("--------------------------------------------")
+    print(f"True MP (0)     | {cm[0, 0]:11d} | {cm[0, 1]:11d}")
+    print(f"True MR (1)     | {cm[1, 0]:11d} | {cm[1, 1]:11d}")
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['MP (Fe/H < -2)', 'MR (Fe/H >= -2)'])
+    disp.plot(cmap='Blues', ax=ax, values_format=',') 
+    from matplotlib.colors import LogNorm
+    try:
+        disp.im_.set_norm(LogNorm(vmin=max(cm.min(), 1), vmax=cm.max()))
+    except:
+        pass
+
+    plt.title(f'Overall Evaluation (Accuracy: {acc:.2%})')
+    plt.tight_layout()
+    out_file = os.path.join(out_dir, 'confusion_matrix_all_data_ebv.png' if use_ebv else 'confusion_matrix_all_data.png')
+    plt.savefig(out_file, dpi=300)
+    plt.close(fig)
+    print(f"Saved confusion matrix plot to {out_file}.")
+
 class LinearClassifier(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
@@ -30,7 +140,28 @@ def main():
     p_add('--no-tf32', action='store_true', help="Disable TF32 for Ampere+ GPUs.")
     p_add('--compile', action='store_true', help="Use torch.compile().")
     p_add('--use-ebv', action='store_true', help="Include 'ebv' column as a feature.")
+    p_add('--run-name', type=str, default=None, help="Name of the run. Outputs will be saved to linear_{run_name}/.")
+    p_add('--seed', type=int, default=42, help="Random seed for reproducibility.")
+    p_add('--file-path', type=str, default='./bp_rp_lamost_normalized.h5', help="Path to the input H5 file.")
+    p_add('--feh-threshold', type=float, default=-2.0, help="[Fe/H] threshold defining the boundary between MP and MR classes.")
+    p_add('--train-frac', type=float, default=0.8, help="Fraction of metal-poor stars used for training (remaining used for test).")
+    p_add('--mr-ratio', type=int, default=1, help="Ratio of Metal-Rich to Metal-Poor stars in the training/test sets.")
+    p_add('--hidden-dim', type=int, default=2, help="Hidden dimension (currently unused).")
+    p_add('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help="Optimizer type: 'adam' or 'sgd'.")
+    p_add('--lr', type=float, default=1.0, help="Initial learning rate.")
+    p_add('--momentum', type=float, default=0.0, help="Momentum factor for SGD optimizer. Ignored if --optimizer=adam.")
+    p_add('--weight-decay', type=float, default=0.0, help="Weight decay factor for L2 regularization.")
+    p_add('--epochs', type=int, default=500, help="Number of training epochs.")
+    p_add('--batch-size', type=int, default=30000, help="Batch size for training.")
+    p_add('--lr-end-factor', type=float, default=1.0, help="Final learning rate multiplier (linear scheduler).")
+    p_add('--lambda-MP', type=float, default=1.0, help="Reweight factor for MP class. MP weight = lambda_MP / (1+lambda_MP), MR weight = 1/(1+lambda_MP).")
     args = parser.parse_args()
+
+    if args.run_name:
+        out_dir = f"linear_{args.run_name}"
+        os.makedirs(out_dir, exist_ok=True)
+    else:
+        out_dir = "."
 
     # --- Hardware Search / List ---
     if args.list_hardware:
@@ -57,17 +188,13 @@ def main():
         print(f"\nCPU Threads: {torch.get_num_threads()}")
         return
 
-    cfg = {'seed': 42, 'file_path': './bp_rp_lamost_normalized.h5', 'feh_threshold': -2.0,
-           'train_frac': 0.8, 'mr_ratio': 2, 'hidden_dim': 2, 'optimizer': 'adam', 'lr': 1,
-           'momentum': 0, 'weight_decay': 0, 'epochs': 500, 'batch_size': 30000, 'lr_end_factor': 1}
-
-    np.random.seed(cfg['seed'])
-    torch.manual_seed(cfg['seed'])
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(cfg['seed'])
+        torch.cuda.manual_seed_all(args.seed)
 
     # 2. Load data
-    file_path = cfg['file_path']
+    file_path = args.file_path
     if not os.path.exists(file_path):
         print(f"Error: File '{file_path}' not found.")
         return
@@ -88,7 +215,7 @@ def main():
         valid_feh = full_feh[valid_mask]
         
         # Binary definition: MP < feh_threshold <= MR
-        thr = cfg['feh_threshold']
+        thr = args.feh_threshold
         mp_idx = valid_idx[valid_feh < thr]
         mr_idx = valid_idx[valid_feh >= thr]
 
@@ -100,10 +227,10 @@ def main():
             print("No metal-poor data found!")
             return
 
-        N_tr_mp = int(cfg['train_frac'] * N_mp)
+        N_tr_mp = int(args.train_frac * N_mp)
         N_te_mp = N_mp - N_tr_mp
 
-        ratio   = cfg['mr_ratio']
+        ratio   = args.mr_ratio
         N_tr_mr = ratio * N_tr_mp
         N_te_mr = ratio * N_te_mp
         
@@ -222,20 +349,22 @@ def main():
         except Exception as e:
             print(f"Warning: torch.compile failed: {e}")
     
-    criterion = nn.BCEWithLogitsLoss()
+    w_mr = 1.0 / (1.0 + args.lambda_MP)
+    w_mp = args.lambda_MP / (1.0 + args.lambda_MP)
+    criterion = nn.BCEWithLogitsLoss(reduction='none')
 
-    if cfg['optimizer'] == 'adam':
+    if args.optimizer == 'adam':
         optimizer = optim.Adam(
             model.parameters(),
-            lr=cfg['lr'],
-            weight_decay=cfg['weight_decay'],
+            lr=args.lr,
+            weight_decay=args.weight_decay,
         )
     else:
         optimizer = optim.SGD(
             model.parameters(),
-            lr=cfg['lr'],
-            momentum=cfg['momentum'],
-            weight_decay=cfg['weight_decay'],
+            lr=args.lr,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay,
         )
 
     from torch.utils.data import TensorDataset, DataLoader
@@ -244,16 +373,16 @@ def main():
     train_dataset = TensorDataset(X_train_t, y_train_t)
     test_dataset  = TensorDataset(X_test_t,  y_test_t)
 
-    train_loader = DataLoader(train_dataset, batch_size=cfg['batch_size'], shuffle=True)
-    test_loader  = DataLoader(test_dataset,  batch_size=cfg['batch_size'], shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    test_loader  = DataLoader(test_dataset,  batch_size=args.batch_size, shuffle=False)
 
-    epochs = cfg['epochs']
+    epochs = args.epochs
 
     from torch.optim.lr_scheduler import LinearLR
     scheduler = LinearLR(
         optimizer,
         start_factor=1.0,
-        end_factor=cfg['lr_end_factor'],
+        end_factor=args.lr_end_factor,
         total_iters=epochs,
     )
 
@@ -269,7 +398,9 @@ def main():
             # batch_x, batch_y are already on device
             optimizer.zero_grad()
             out = model(batch_x)
-            loss = criterion(out, batch_y)
+            loss_unreduced = criterion(out, batch_y)
+            w = w_mr * batch_y + w_mp * (1 - batch_y)
+            loss = (loss_unreduced * w).mean()
             loss.backward()
             optimizer.step()
 
@@ -282,7 +413,10 @@ def main():
             for batch_x, batch_y in train_loader:
                 # batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 out = model(batch_x)
-                epoch_train_loss += criterion(out, batch_y).item() * batch_x.size(0)
+                loss_unreduced = criterion(out, batch_y)
+                w = w_mr * batch_y + w_mp * (1 - batch_y)
+                loss = (loss_unreduced * w).mean()
+                epoch_train_loss += loss.item() * batch_x.size(0)
         epoch_train_loss /= len(train_dataset)
         train_losses.append(epoch_train_loss)
 
@@ -292,7 +426,10 @@ def main():
         with torch.no_grad():
             for batch_x, batch_y in test_loader:
                 out = model(batch_x)
-                epoch_test_loss += criterion(out, batch_y).item() * batch_x.size(0)
+                loss_unreduced = criterion(out, batch_y)
+                w = w_mr * batch_y + w_mp * (1 - batch_y)
+                loss = (loss_unreduced * w).mean()
+                epoch_test_loss += loss.item() * batch_x.size(0)
                 preds = (out > 0.0).float()
                 correct_test += (preds == batch_y).sum().item()
                 
@@ -337,12 +474,13 @@ def main():
     labs = [l.get_label() for l in lns]
     ax1.legend(lns, labs, fontsize=12, loc='center right')
 
-    plt.title("Train/Test Loss & Test Accuracy (Linear Classifier)", fontsize=14)
+    plt.title(f"Train/Test Loss & Test Accuracy (Linear, $\lambda_{{MP}}$={args.lambda_MP})", fontsize=14)
     
     fig.tight_layout()
-    out_img = 'train_test_loss.png'
+    out_img = 'linear.png'
     if args.use_ebv:
-        out_img = 'train_test_loss_ebv.png'
+        out_img = 'linear_ebv.png'
+    out_img = os.path.join(out_dir, out_img)
     fig.savefig(out_img, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"Training complete. Loss curve saved to {out_img}")
@@ -354,8 +492,13 @@ def main():
     bias = model.fc.bias.detach().cpu().item()
     
     out_csv = 'linear_model_weights.csv'
+    weights_img = 'weights_plot.png'
     if args.use_ebv:
         out_csv = 'linear_model_weights_ebv.csv'
+        weights_img = 'weights_plot_ebv.png'
+    
+    out_csv = os.path.join(out_dir, out_csv)
+    weights_img = os.path.join(out_dir, weights_img)
 
     with open(out_csv, 'w') as f:
         f.write("feature,weight\n")
@@ -363,6 +506,10 @@ def main():
         for name, w in zip(feature_cols, weights):
             f.write(f"{name},{w}\n")
     print(f"Weights saved to {out_csv} (Total features: {len(feature_cols)})")
+
+    # Automatically trigger visualize_weights and evaluate_all
+    visualize_weights(out_csv, weights_img)
+    evaluate_all(out_csv, args.use_ebv, out_dir)
 
 if __name__ == "__main__":
     main()

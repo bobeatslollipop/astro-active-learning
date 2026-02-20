@@ -16,10 +16,10 @@ def visualize_large_h5(
     n_samples=20000, 
     method='umap',       # 'umap', 'tsne', or 'pca'
     random_state=42,
-    feh_classify=False,  # If True: binary red/blue by feh threshold; 
-                         # If False (default): continuous feh heatmap
-    feh_threshold=-2.0,  # Classification boundary (feh > threshold → red, ≤ threshold → blue)
+    feh_classify=False,  # If True: binary red/blue; If False: continuous heatmap
+    feh_threshold=None,  # If None: random sampling; If value: balanced class sampling
     red_blue_ratio=2.0,  # Ratio of red to blue samples
+    eval_weights=None,   # Path to linear classifier weights CSV
 ):
     """
     Sample a subset of data from a large normalized H5 file (columnar or 2D) and visualize.
@@ -32,6 +32,7 @@ def visualize_large_h5(
         return
 
     feh_values = None
+    y_pred = None
 
     try:
         with h5py.File(file_path, 'r') as f:
@@ -72,7 +73,7 @@ def visualize_large_h5(
             # 2. Sampling
             np.random.seed(random_state)
 
-            if feh_classify and has_feh:
+            if feh_threshold is not None and has_feh:
                 # ---- Balanced class sampling ----
                 # Read the full feh column first to determine class membership,
                 # then draw k = min(N_blue, n_samples) samples from each class.
@@ -108,9 +109,9 @@ def visualize_large_h5(
                 del full_feh
 
             else:
-                # ---- Plain random sampling ----
+                # ---- Plain random sampling (Triggered if feh_threshold is None) ----
                 if total_rows > n_samples:
-                    print(f"Sampling {n_samples} indices from {total_rows}...")
+                    print(f"No threshold provided. Sampling {n_samples} random indices...")
                     indices = np.random.choice(total_rows, n_samples, replace=False)
                     indices.sort()
                 else:
@@ -154,6 +155,43 @@ def visualize_large_h5(
 
             if feh_values is not None:
                 print(f"feh range: [{np.nanmin(feh_values):.3f}, {np.nanmax(feh_values):.3f}]")
+
+            # 5. Evaluate Weights if provided
+            if eval_weights is not None:
+                import csv
+                if not os.path.exists(eval_weights):
+                    print(f"Error: Weights file '{eval_weights}' not found. Skipping evaluation.")
+                else:
+                    print(f"Evaluating linear classifier using '{eval_weights}'...")
+                    with open(eval_weights, 'r') as cf:
+                        rows = list(csv.DictReader(cf))
+                    bias = float(next(r['weight'] for r in rows if r['feature'] == 'BIAS'))
+                    wt_dict = {r['feature']: float(r['weight']) for r in rows if r['feature'] != 'BIAS'}
+                    
+                    logits = np.zeros(len(indices), dtype=np.float32) + bias
+                    sum_sq = np.zeros(len(indices), dtype=np.float64)
+                    
+                    # Compute norm for BP/RP features used by the model
+                    for i, col_name in enumerate(feature_cols):
+                        if col_name in wt_dict:
+                            sum_sq += data_sampled[:, i] ** 2
+                    norms = np.sqrt(sum_sq) + 1e-8
+                    
+                    # Compute logits
+                    for i, col_name in enumerate(feature_cols):
+                        if col_name in wt_dict:
+                            logits += (data_sampled[:, i] / norms) * wt_dict[col_name]
+                            
+                    # Handle other features like ebv
+                    for feat, w in wt_dict.items():
+                        if feat not in feature_cols:
+                            if feat in f.keys():
+                                col_data = np.nan_to_num(f[feat][:][indices])
+                                logits += col_data * w
+                            else:
+                                print(f"Warning: feature '{feat}' needed by weights but not in H5.")
+                                
+                    y_pred = (logits > 0.0).astype(int)
 
     except Exception as e:
         print(f"Error processing H5 file: {e}")
@@ -202,21 +240,10 @@ def visualize_large_h5(
 
     # 6. Plotting
 
-    # --- Plot A: plain scatter (blue) ---
+    # Create output directory
     output_dir = 'data_visualization'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-    ax.scatter(embedding[:, 0], embedding[:, 1], s=1, alpha=0.5, c='steelblue')
-    ax.set_title(f"{method.upper()} projection of {len(indices)} samples")
-    ax.set_xlabel("Component 1")
-    ax.set_ylabel("Component 2")
-    
-    output_img = os.path.join(output_dir, f"{method}_projection.png")
-    fig.savefig(output_img, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    print(f"Saved plain scatter to {output_img}")
 
     # --- Plot B: feh-colored scatter ---
     if feh_values is not None:
@@ -236,7 +263,10 @@ def visualize_large_h5(
                 s=1, alpha=0.3, c='lightgrey', label='feh = NaN'
             )
 
-        if feh_classify:
+        # Decide final plotting mode: Binary mode requires both feh_classify=True AND a valid threshold
+        use_binary_plot = feh_classify and (feh_threshold is not None)
+
+        if use_binary_plot:
             # ---- Binary classification mode ----
             above = valid_mask & (feh_values >= feh_threshold)
             below = valid_mask & (feh_values <  feh_threshold)
@@ -292,6 +322,44 @@ def visualize_large_h5(
 
             feh_img = os.path.join(output_dir, f"{method}_feh_heatmap.png")
 
+        # ---- Evaluation Overlay ----
+        if eval_weights is not None and y_pred is not None:
+            eval_threshold = feh_threshold if feh_threshold is not None else -2.0
+            y_true = (feh_values >= eval_threshold).astype(int)
+            
+            # MP = 0, MR = 1
+            mp_as_mr = valid_mask & (y_true == 0) & (y_pred == 1)
+            mr_as_mp = valid_mask & (y_true == 1) & (y_pred == 0)
+            
+            # Helper to determine marker colors
+            # If continuous: use the color from the heatmap for that feh value
+            # If binary: use the standard crimson/royalblue
+            if not use_binary_plot:
+                # Need the same normalization as the main scatter
+                norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+                cmap = plt.get_cmap('RdYlBu')
+                colors_mp_as_mr = cmap(norm(feh_values[mp_as_mr]))
+                colors_mr_as_mp = cmap(norm(feh_values[mr_as_mp]))
+            else:
+                colors_mp_as_mr = 'crimson'
+                colors_mr_as_mp = 'royalblue'
+
+            if mp_as_mr.sum() > 0:
+                ax.scatter(
+                    embedding[mp_as_mr, 0], embedding[mp_as_mr, 1],
+                    marker='^', s=30, alpha=0.9, c=colors_mp_as_mr, edgecolors='black', linewidths=0.6,
+                    label=f'Err: MP \u2192 MR (n={mp_as_mr.sum()})'
+                )
+            if mr_as_mp.sum() > 0:
+                ax.scatter(
+                    embedding[mr_as_mp, 0], embedding[mr_as_mp, 1],
+                    marker='^', s=30, alpha=0.9, c=colors_mr_as_mp, edgecolors='black', linewidths=0.6,
+                    label=f'Err: MR \u2192 MP (n={mr_as_mp.sum()})'
+                )
+                
+            ax.legend(markerscale=1.5, fontsize=11, loc='best')
+            feh_img = feh_img.replace('.png', '_eval.png')
+
         ax.set_xlabel("Component 1", fontsize=12)
         ax.set_ylabel("Component 2", fontsize=12)
 
@@ -304,10 +372,12 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Visualize embedding from H5 file.")
     p.add_argument("--file", type=str, default='./bp_rp_lamost_normalized.h5', help="Path to input")
     p.add_argument("--n_samples", type=int, default=20000)
-    p.add_argument("--method", type=str, default='pca', choices=['umap', 'tsne', 'pca'])
-    p.add_argument("--threshold", type=float, default=-2.0)
-    p.add_argument("--continuous", action="store_true", help="Continuous heatmap")
-    p.add_argument("--ratio", type=float, default=1.0, help="Red to Blue ratio")
+    p.add_argument("--method", type=str, default='umap', choices=['umap', 'tsne', 'pca'])
+    p.add_argument("--threshold", type=float, default=None, help="Fe/H threshold for balanced sampling. If None, uses random sampling.")
+    p.add_argument("--continuous", action="store_true", help="Use continuous heatmap for plotting")
+    p.add_argument("--ratio", type=float, default=2.0, help="Red to Blue ratio for balanced sampling")
+    p.add_argument("--eval_weights", nargs='?', const='linear_model_weights_ebv.csv', default=None, 
+                   help="Path to weights CSV to evaluate and highlight classification errors (default: linear_model_weights_ebv.csv)")
     args = p.parse_args()
     
     TARGET_FILE = args.file
@@ -324,6 +394,7 @@ if __name__ == "__main__":
             feh_classify=not args.continuous,
             feh_threshold=args.threshold,
             red_blue_ratio=args.ratio,
+            eval_weights=args.eval_weights,
         )
     else:
         print(f"File {TARGET_FILE} not found.")
