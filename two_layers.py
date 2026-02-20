@@ -105,16 +105,16 @@ def main():
     p_add('--use-ebv', action='store_true', help="Include 'ebv' column as a feature.")
     p_add('--run-name', type=str, default=None, help="Name of the run. Outputs will be saved to twolayers_{run_name}/.")
     p_add('--seed', type=int, default=42, help="Random seed for reproducibility.")
-    p_add('--file-path', type=str, default='./bp_rp_lamost_normalized.h5', help="Path to the input H5 file.")
+    p_add('--data-split', type=str, default='random', choices=['random', 'low_temp'], help="Which dataset split to use. Defaults to 'random'.")
+    p_add('--train-file', type=str, default=None, help="Path to train H5 file. Overrides --data-split.")
+    p_add('--test-file', type=str, default=None, help="Path to test H5 file. Overrides --data-split.")
     p_add('--feh-threshold', type=float, default=-2.0, help="[Fe/H] threshold defining the boundary between MP and MR classes.")
-    p_add('--train-frac', type=float, default=0.8, help="Fraction of metal-poor stars used for training (remaining used for test).")
-    p_add('--mr-ratio', type=int, default=1, help="Ratio of Metal-Rich to Metal-Poor stars in the training/test sets.")
     p_add('--hidden-size', type=int, default=16, help="Hidden dimension size for the two layer network.")
     p_add('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help="Optimizer type: 'adam' or 'sgd'.")
     p_add('--lr', type=float, default=1.0, help="Initial learning rate.")
     p_add('--momentum', type=float, default=0.0, help="Momentum factor for SGD optimizer. Ignored if --optimizer=adam.")
     p_add('--weight-decay', type=float, default=0.0, help="Weight decay factor for L2 regularization.")
-    p_add('--epochs', type=int, default=500, help="Number of training epochs.")
+    p_add('--epochs', type=int, default=50, help="Number of training epochs.")
     p_add('--batch-size', type=int, default=30000, help="Batch size for training.")
     p_add('--lr-end-factor', type=float, default=1.0, help="Final learning rate multiplier (linear scheduler).")
     p_add('--lambda-MP', type=float, default=1.0, help="Reweight factor for MP class. MP weight = lambda_MP / (1+lambda_MP), MR weight = 1/(1+lambda_MP).")
@@ -157,78 +157,49 @@ def main():
         torch.cuda.manual_seed_all(args.seed)
 
     # 2. Load data
-    file_path = args.file_path
-    if not os.path.exists(file_path):
-        print(f"Error: File '{file_path}' not found.")
+    train_file = args.train_file
+    test_file = args.test_file
+
+    def find_data_split(split, root='.'):
+        # 1. Look for a directory that contains the split name (e.g., 'random' or 'low_temp')
+        found_dir = None
+        for dirpath, dirnames, _ in os.walk(root):
+            for d in dirnames:
+                if split.lower() in d.lower():
+                    found_dir = os.path.join(dirpath, d)
+                    break
+            if found_dir:
+                break
+        
+        if not found_dir:
+            return None, None
+            
+        # 2. In that directory, look for .h5 files containing 'train' and 'test'
+        t_f, te_f = None, None
+        for f in os.listdir(found_dir):
+            if f.endswith('.h5'):
+                if 'train' in f.lower():
+                    t_f = os.path.join(found_dir, f)
+                elif 'test' in f.lower():
+                    te_f = os.path.join(found_dir, f)
+        return t_f, te_f
+
+    if train_file is None or test_file is None:
+        train_file, test_file = find_data_split(args.data_split)
+
+    if train_file is None or test_file is None or not os.path.exists(train_file) or not os.path.exists(test_file):
+        print(f"Error: Could not find training/test h5 files for split '{args.data_split}'.")
+        print("Please ensure a subdirectory exists with the split name and contains H5 files with 'train' and 'test' in their names.")
         return
 
     print("Loading data...")
-    with h5py.File(file_path, 'r') as f:
-        keys = list(f.keys())
+    with h5py.File(train_file, 'r') as f_tr, h5py.File(test_file, 'r') as f_te:
+        keys = list(f_tr.keys())
         bp_cols = sorted([k for k in keys if k.startswith('bp_')], key=numerical_sort_key)
         rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
         feature_cols = bp_cols + rp_cols
         if args.use_ebv:
             feature_cols.append('ebv')
-        
-        full_feh = f['feh'][:].astype(np.float64)
-        valid_mask = np.isfinite(full_feh)
-        
-        valid_idx = np.where(valid_mask)[0]
-        valid_feh = full_feh[valid_mask]
-        
-        # Binary definition: MP < feh_threshold <= MR
-        thr = args.feh_threshold
-        mp_idx = valid_idx[valid_feh < thr]
-        mr_idx = valid_idx[valid_feh >= thr]
-
-        np.random.shuffle(mp_idx)
-        np.random.shuffle(mr_idx)
-
-        N_mp = len(mp_idx)
-        if N_mp == 0:
-            print("No metal-poor data found!")
-            return
-
-        N_tr_mp = int(args.train_frac * N_mp)
-        N_te_mp = N_mp - N_tr_mp
-
-        ratio   = args.mr_ratio
-        N_tr_mr = ratio * N_tr_mp
-        N_te_mr = ratio * N_te_mp
-        
-        print(f"Total metal-poor data count: {N_mp}")
-        print(f"Train MP (0): {N_tr_mp}, Train MR (1): {N_tr_mr}  [Total Train: {N_tr_mp + N_tr_mr}]")
-        print(f"Test MP (0): {N_te_mp}, Test MR (1): {N_te_mr}   [Total Test:  {N_te_mp + N_te_mr}]")
-        
-        if len(mr_idx) < N_tr_mr + N_te_mr:
-            print(f"Warning: Not enough metal-rich data! Have {len(mr_idx)}, need {N_tr_mr + N_te_mr}.")
-            print("Adjusting test metal-rich limit to match available sizes.")
-            N_te_mr = len(mr_idx) - N_tr_mr
-            if N_te_mr < 0:
-                print("Error: Too little MR data even for training.")
-                return
-            print(f"New Test MR (1): {N_te_mr}")
-
-        tr_mp_idx = mp_idx[:N_tr_mp]
-        te_mp_idx = mp_idx[N_tr_mp:]
-        
-        tr_mr_idx = mr_idx[:N_tr_mr]
-        te_mr_idx = mr_idx[N_tr_mr:N_tr_mr+N_te_mr]
-        
-        train_idx = np.concatenate([tr_mp_idx, tr_mr_idx])
-        train_labels = np.concatenate([np.zeros(N_tr_mp), np.ones(N_tr_mr)])
-        
-        test_idx = np.concatenate([te_mp_idx, te_mr_idx])
-        test_labels = np.concatenate([np.zeros(N_te_mp), np.ones(N_te_mr)])
-        
-        train_shuffle = np.random.permutation(len(train_idx))
-        train_idx = train_idx[train_shuffle]
-        train_labels = train_labels[train_shuffle]
-        
-        test_shuffle = np.random.permutation(len(test_idx))
-        test_idx = test_idx[test_shuffle]
-        test_labels = test_labels[test_shuffle]
         
         print("Extracting features (this may take a moment)...")
         train_data_list = []
@@ -236,15 +207,22 @@ def main():
         for i, col_name in enumerate(feature_cols):
             if i % 20 == 0:
                 print(f" Reading column {i}/{len(feature_cols)}...")
-            full_col = f[col_name][:]
-            train_data_list.append(full_col[train_idx])
-            test_data_list.append(full_col[test_idx])
+            train_data_list.append(f_tr[col_name][:])
+            test_data_list.append(f_te[col_name][:])
             
         X_train = np.column_stack(train_data_list)
         X_test = np.column_stack(test_data_list)
         
-        y_train = train_labels
-        y_test = test_labels
+        thr = args.feh_threshold
+        y_train = (f_tr['feh'][:] >= thr).astype(np.float32)
+        y_test = (f_te['feh'][:] >= thr).astype(np.float32)
+
+        N_tr_mp = np.sum(y_train == 0)
+        N_tr_mr = np.sum(y_train == 1)
+        N_te_mp = np.sum(y_test == 0)
+        N_te_mr = np.sum(y_test == 1)
+        print(f"Train MP (0): {int(N_tr_mp)}, Train MR (1): {int(N_tr_mr)}  [Total Train: {len(y_train)}]")
+        print(f"Test MP (0): {int(N_te_mp)}, Test MR (1): {int(N_te_mr)}   [Total Test:  {len(y_test)}]")
 
     X_train = np.nan_to_num(X_train)
     X_test = np.nan_to_num(X_test)
@@ -423,7 +401,7 @@ def main():
     labs = [l.get_label() for l in lns]
     ax1.legend(lns, labs, fontsize=12, loc='center right')
 
-    plt.title(f"Train/Test Loss & Test Accuracy (Two Layers, $\lambda_{{MP}}$={args.lambda_MP})", fontsize=14)
+    plt.title(r"Train/Test Loss & Test Accuracy (Two Layers, $\lambda_{MP}$=" + f"{args.lambda_MP})", fontsize=14)
     
     fig.tight_layout()
     out_img = 'twolayers.png'

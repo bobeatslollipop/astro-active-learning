@@ -1,7 +1,16 @@
-## Training Linear Classifier
-To train the model with default settings:
+## Dataset Generation
+Before training, you need to generate the split training and testing datasets.
 ```bash
-python linear_classifier.py --run-name default_run --seed 42 --file-path ./bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1 --optimizer adam --lr 1.0 --epochs 50 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 1.0 --weight-decay 0.0 --momentum 0.0 --use-ebv
+cd random_training
+python generate_dataset.py --seed 42 --file-path ../bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1
+cd ..
+```
+This generates `random_train_set.h5` and `random_test_set.h5` inside the `random_training` folder.
+
+## Training Linear Classifier
+To train the model:
+```bash
+python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer adam --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 1.0 --weight-decay 0.0 --momentum 0.0 --use-ebv --data-split low_temp
 ```
 
 All outputs (weights, loss plots, and evaluation confusion matrices) will be saved in the `linear_{run_name}` directory.
@@ -12,11 +21,12 @@ All outputs (weights, loss plots, and evaluation confusion matrices) will be sav
 | :--- | :--- | :--- | :--- |
 | `--run-name` | `str` | `None` | Name of the run. Outputs will be saved to `linear_{run_name}/`. |
 | `--use-ebv` | `flag` | `False` | Include `ebv` as a training feature. |
+| `--data-split` | `str` | `random` | Which dataset split to use. Choices are `random` or `low_temp`. |
+| `--train-file` | `str` | `None` | Path to custom train H5 file. Overrides `--data-split`. |
+| `--test-file`| `str` | `None` | Path to custom test H5 file. Overrides `--data-split`. |
 | `--lambda-MP` | `float` | `2.0` | Reweight factor for Metal-Poor (MP) class. MP weight = $\lambda_{MP} / (1+\lambda_{MP})$, MR weight = $1/(1+\lambda_{MP})$. |
 | `--feh-threshold` | `float` | `-2.0` | [Fe/H] threshold defining the boundary between MP and MR classes. |
 | `--seed` | `int` | `42` | Random seed for reproducibility. |
-| `--train-frac` | `float` | `0.8` | Fraction of metal-poor stars used for training (remaining used for test). |
-| `--mr-ratio` | `int` | `1` | Ratio of Metal-Rich to Metal-Poor stars in the training/test sets. |
 | `--optimizer` | `str` | `adam` | Optimizer to use: `adam` or `sgd`. |
 | `--lr` | `float` | `1.0` | Initial learning rate. |
 | `--lr-end-factor`| `float` | `1.0` | Final learning rate multiplier (linear scheduler). |
@@ -24,7 +34,6 @@ All outputs (weights, loss plots, and evaluation confusion matrices) will be sav
 | `--batch-size` | `int` | `30000` | Batch size for training. |
 | `--weight-decay` | `float` | `0.0` | Weight decay factor for L2 regularization. |
 | `--momentum` | `float` | `0.0` | Momentum factor for SGD optimizer. Ignored if `--optimizer=adam`. |
-| `--file-path` | `str` | `./bp_rp_lamost_normalized.h5` | Path to the input H5 file. |
 
 ### Embedding Visualization
 
