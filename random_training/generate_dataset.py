@@ -15,7 +15,7 @@ def main():
     p_add('--file-path', type=str, default='../bp_rp_lamost_normalized.h5', help="Path to the input H5 file.")
     p_add('--feh-threshold', type=float, default=-2.0, help="[Fe/H] threshold defining the boundary between MP and MR classes.")
     p_add('--train-frac', type=float, default=0.8, help="Fraction of metal-poor stars used for training (remaining used for test).")
-    p_add('--mr-ratio', type=int, default=1, help="Ratio of Metal-Rich to Metal-Poor stars in the training/test sets.")
+    p_add('--mr-ratio', type=int, default=5, help="Ratio of Metal-Rich to Metal-Poor stars in the training/test sets.")
     args = parser.parse_args()
 
     np.random.seed(args.seed)

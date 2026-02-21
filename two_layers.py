@@ -13,8 +13,8 @@ def numerical_sort_key(s):
     return [int(text) if text.isdigit() else text.lower()
             for text in re.split('([0-9]+)', s)]
 
-def evaluate_all(model, device, use_ebv, out_dir):
-    from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay
+def evaluate_all(model, device, out_dir):
+    from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay, precision_recall_fscore_support
     print("Evaluating on all data...")
 
     file_path = 'bp_rp_lamost_normalized.h5'
@@ -24,8 +24,7 @@ def evaluate_all(model, device, use_ebv, out_dir):
         rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
         feature_cols = bp_cols + rp_cols
         
-        if use_ebv:
-            feature_cols.append('ebv')
+        feature_cols.append('ebv')
         
         full_feh = f['feh'][:].astype(np.float64)
         valid_mask = np.isfinite(full_feh)
@@ -40,13 +39,9 @@ def evaluate_all(model, device, use_ebv, out_dir):
         
         X_all = np.column_stack(X_all)
         
-        if use_ebv:
-            X_to_norm = X_all[:, :-1]
-            norms = np.linalg.norm(X_to_norm, axis=1, keepdims=True) + 1e-8
-            X_all[:, :-1] = X_to_norm / norms
-        else:
-            norms = np.linalg.norm(X_all, axis=1, keepdims=True) + 1e-8
-            X_all = X_all / norms
+        X_to_norm = X_all[:, :-1]
+        norms = np.linalg.norm(X_to_norm, axis=1, keepdims=True) + 1e-8
+        X_all[:, :-1] = X_to_norm / norms
         
         batch_size = 50000
         y_pred = np.zeros(len(y_true), dtype=int)
@@ -62,7 +57,13 @@ def evaluate_all(model, device, use_ebv, out_dir):
     acc = accuracy_score(y_true, y_pred)
     cm = confusion_matrix(y_true, y_pred)
     
-    print(f"Overall Accuracy on all data: {acc:.4%}\n")
+    # Calculate precision and recall for both classes
+    precision, recall, _, _ = precision_recall_fscore_support(y_true, y_pred, labels=[0, 1], zero_division=0)
+    
+    print(f"Overall Accuracy on all data: {acc:.4%}")
+    print(f"Class MP (0): Precision = {precision[0]:.4f}, Recall = {recall[0]:.4f}")
+    print(f"Class MR (1): Precision = {precision[1]:.4f}, Recall = {recall[1]:.4f}\n")
+    
     print("Confusion Matrix:")
     print("                 | Pred MP (0) | Pred MR (1)")
     print("--------------------------------------------")
@@ -78,9 +79,11 @@ def evaluate_all(model, device, use_ebv, out_dir):
     except Exception:
         pass
 
-    plt.title(f'Overall Evaluation (Accuracy: {acc:.2%})')
+    title_str = f'Overall Evaluation\nAcc: {acc:.2%}  MP(P:{precision[0]:.3f}, R:{recall[0]:.3f}) MR(P:{precision[1]:.3f}, R:{recall[1]:.3f})'
+    plt.title(title_str, fontsize=11)
+    
     plt.tight_layout()
-    out_file = os.path.join(out_dir, 'confusion_matrix_all_data_ebv.png' if use_ebv else 'confusion_matrix_all_data.png')
+    out_file = os.path.join(out_dir, 'confusion_matrix_all_data.png')
     plt.savefig(out_file, dpi=300)
     plt.close(fig)
     print(f"Saved confusion matrix plot to {out_file}.")
@@ -102,7 +105,7 @@ def main():
     p_add('--list-hardware', action='store_true', help="List available hardware and exit.")
     p_add('--no-tf32', action='store_true', help="Disable TF32 for Ampere+ GPUs.")
     p_add('--compile', action='store_true', help="Use torch.compile().")
-    p_add('--use-ebv', action='store_true', help="Include 'ebv' column as a feature.")
+
     p_add('--run-name', type=str, default=None, help="Name of the run. Outputs will be saved to twolayers_{run_name}/.")
     p_add('--seed', type=int, default=42, help="Random seed for reproducibility.")
     p_add('--data-split', type=str, default='random', choices=['random', 'low_temp'], help="Which dataset split to use. Defaults to 'random'.")
@@ -198,8 +201,7 @@ def main():
         bp_cols = sorted([k for k in keys if k.startswith('bp_')], key=numerical_sort_key)
         rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
         feature_cols = bp_cols + rp_cols
-        if args.use_ebv:
-            feature_cols.append('ebv')
+        feature_cols.append('ebv')
         
         print("Extracting features (this may take a moment)...")
         train_data_list = []
@@ -229,25 +231,18 @@ def main():
     
     # --- Optimization: Pre-normalize Data ---
     print("Pre-normalizing data (L2)...")
-    if args.use_ebv:
-        X_train_to_norm = X_train[:, :-1]
-        X_test_to_norm = X_test[:, :-1]
-        ebv_train = X_train[:, -1:]
-        ebv_test = X_test[:, -1:]
-        
-        train_norms = np.linalg.norm(X_train_to_norm, axis=1, keepdims=True)
-        X_train_normed = X_train_to_norm / (train_norms + 1e-8)
-        X_train = np.hstack([X_train_normed, ebv_train])
-        
-        test_norms = np.linalg.norm(X_test_to_norm, axis=1, keepdims=True)
-        X_test_normed = X_test_to_norm / (test_norms + 1e-8)
-        X_test = np.hstack([X_test_normed, ebv_test])
-    else:
-        train_norms = np.linalg.norm(X_train, axis=1, keepdims=True)
-        X_train = X_train / (train_norms + 1e-8)
-        
-        test_norms = np.linalg.norm(X_test, axis=1, keepdims=True)
-        X_test = X_test / (test_norms + 1e-8)
+    X_train_to_norm = X_train[:, :-1]
+    X_test_to_norm = X_test[:, :-1]
+    ebv_train = X_train[:, -1:]
+    ebv_test = X_test[:, -1:]
+    
+    train_norms = np.linalg.norm(X_train_to_norm, axis=1, keepdims=True)
+    X_train_normed = X_train_to_norm / (train_norms + 1e-8)
+    X_train = np.hstack([X_train_normed, ebv_train])
+    
+    test_norms = np.linalg.norm(X_test_to_norm, axis=1, keepdims=True)
+    X_test_normed = X_test_to_norm / (test_norms + 1e-8)
+    X_test = np.hstack([X_test_normed, ebv_test])
 
     # --- Device Selection & Optimization ---
     if args.device:
@@ -405,8 +400,6 @@ def main():
     
     fig.tight_layout()
     out_img = 'twolayers.png'
-    if args.use_ebv:
-        out_img = 'twolayers_ebv.png'
     out_img = os.path.join(out_dir, out_img)
     fig.savefig(out_img, dpi=300, bbox_inches='tight')
     plt.close(fig)
@@ -416,15 +409,13 @@ def main():
     # --- Save Weights ---
     print("Saving model weights to PyTorch model file...")
     out_model = 'twolayers_model.pt'
-    if args.use_ebv:
-        out_model = 'twolayers_model_ebv.pt'
     
     out_model = os.path.join(out_dir, out_model)
     torch.save(model.state_dict(), out_model)
     print(f"Model saved to {out_model}")
 
     # Automatically trigger evaluate_all
-    evaluate_all(model, device, args.use_ebv, out_dir)
+    evaluate_all(model, device, out_dir)
 
 if __name__ == "__main__":
     main()

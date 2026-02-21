@@ -372,8 +372,8 @@ if __name__ == "__main__":
     p.add_argument("--threshold", type=float, default=None, help="Fe/H threshold for balanced sampling. If None, uses random sampling.")
     p.add_argument("--continuous", action="store_true", help="Use continuous heatmap for plotting")
     p.add_argument("--ratio", type=float, default=2.0, help="Red to Blue ratio for balanced sampling")
-    p.add_argument("--eval_weights", nargs='?', const='linear_model_weights_ebv.csv', default=None, 
-                   help="Path to weights CSV to evaluate and highlight classification errors (default: linear_model_weights_ebv.csv)")
+    p.add_argument("--eval_weights", nargs='?', const='linear_model_weights.csv', default=None, 
+                   help="Path to weights CSV to evaluate and highlight classification errors (default: linear_model_weights.csv)")
     args = p.parse_args()
     
     TARGET_FILE = args.file

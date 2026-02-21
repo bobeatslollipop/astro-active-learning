@@ -41,8 +41,7 @@ def visualize_weights(csv_path, output_img):
     plt.axhline(0, color='black', linewidth=1, linestyle='--')
     plt.xlabel('Features', fontsize=12)
     plt.ylabel('Weight', fontsize=12)
-    title_suffix = ' (with EBV)' if 'ebv' in all_features else ''
-    plt.title(f'Linear Model Weights for Features{title_suffix}', fontsize=14)
+    plt.title('Linear Model Weights for Features', fontsize=14)
     
     plt.xticks(x[::5], [all_features[i] for i in range(0, len(all_features), 5)], rotation=45)
     
@@ -53,10 +52,10 @@ def visualize_weights(csv_path, output_img):
     plt.close(fig)
     print(f"Plot saved to {output_img}")
 
-def evaluate_all(weights_file, use_ebv, out_dir):
+def evaluate_all(weights_file, out_dir, suffix=''):
     import csv
-    from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay
-    print("Evaluating on all data...")
+    from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay, precision_recall_fscore_support
+    print(f"Evaluating on all data (suffix: '{suffix}')...")
     with open(weights_file, 'r') as f:
         rows = list(csv.DictReader(f))
     bias = float(next(r['weight'] for r in rows if r['feature'] == 'BIAS'))
@@ -69,8 +68,7 @@ def evaluate_all(weights_file, use_ebv, out_dir):
         rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
         feature_cols = bp_cols + rp_cols
         norm_cols = set(feature_cols) 
-        if use_ebv:
-            feature_cols.append('ebv')
+        feature_cols.append('ebv')
         
         full_feh = f['feh'][:].astype(np.float64)
         valid_mask = np.isfinite(full_feh)
@@ -78,27 +76,30 @@ def evaluate_all(weights_file, use_ebv, out_dir):
         
         y_true = (feh_valid >= -2.0).astype(int) 
         
-        sum_sq = np.zeros(len(y_true), dtype=np.float64)
-        for i, col_name in enumerate(feature_cols):
-            if col_name not in norm_cols: continue
-            sum_sq += np.nan_to_num(f[col_name][:][valid_mask]) ** 2
-        norms = np.sqrt(sum_sq) + 1e-8
+        print("Loading and normalizing all data for evaluation...")
+        X_all = []
+        for col_name in feature_cols:
+             X_all.append(np.nan_to_num(f[col_name][:][valid_mask]))
         
-        logits = np.zeros(len(y_true), dtype=np.float32) + bias
+        X_all = np.column_stack(X_all)
         
-        for i, col_name in enumerate(feature_cols):
-            col_valid = np.nan_to_num(f[col_name][:][valid_mask])
-            if col_name in norm_cols:
-                logits += (col_valid / norms) * weights[i]
-            else:
-                logits += col_valid * weights[i]
-
+        X_to_norm = X_all[:, :-1]
+        norms = np.linalg.norm(X_to_norm, axis=1, keepdims=True) + 1e-8
+        X_all[:, :-1] = X_to_norm / norms
+        
+        logits = X_all.dot(weights) + bias
         y_pred = (logits > 0.0).astype(int)
         
     acc = accuracy_score(y_true, y_pred)
     cm = confusion_matrix(y_true, y_pred)
     
-    print(f"Overall Accuracy on all data: {acc:.4%}\n")
+    # Calculate precision and recall for both classes
+    precision, recall, _, _ = precision_recall_fscore_support(y_true, y_pred, labels=[0, 1], zero_division=0)
+    
+    print(f"Overall Accuracy on all data: {acc:.4%}")
+    print(f"Class MP (0): Precision = {precision[0]:.4f}, Recall = {recall[0]:.4f}")
+    print(f"Class MR (1): Precision = {precision[1]:.4f}, Recall = {recall[1]:.4f}\n")
+    
     print("Confusion Matrix:")
     print("                 | Pred MP (0) | Pred MR (1)")
     print("--------------------------------------------")
@@ -114,9 +115,12 @@ def evaluate_all(weights_file, use_ebv, out_dir):
     except Exception:
         pass
 
-    plt.title(f'Overall Evaluation (Accuracy: {acc:.2%})')
+    title_str = f'Overall Evaluation {suffix}\nAcc: {acc:.2%}  MP(P:{precision[0]:.3f}, R:{recall[0]:.3f}) MR(P:{precision[1]:.3f}, R:{recall[1]:.3f})'
+    plt.title(title_str, fontsize=11)
+    
     plt.tight_layout()
-    out_file = os.path.join(out_dir, 'confusion_matrix_all_data_ebv.png' if use_ebv else 'confusion_matrix_all_data.png')
+    out_name = f'confusion_matrix_all_data{suffix}.png'
+    out_file = os.path.join(out_dir, out_name)
     plt.savefig(out_file, dpi=300)
     plt.close(fig)
     print(f"Saved confusion matrix plot to {out_file}.")
@@ -137,7 +141,7 @@ def main():
     p_add('--list-hardware', action='store_true', help="List available hardware and exit.")
     p_add('--no-tf32', action='store_true', help="Disable TF32 for Ampere+ GPUs.")
     p_add('--compile', action='store_true', help="Use torch.compile().")
-    p_add('--use-ebv', action='store_true', help="Include 'ebv' column as a feature.")
+
     p_add('--run-name', type=str, default=None, help="Name of the run. Outputs will be saved to linear_{run_name}/.")
     p_add('--seed', type=int, default=42, help="Random seed for reproducibility.")
     p_add('--data-split', type=str, default='random', choices=['random', 'low_temp'], help="Which dataset split to use. Defaults to 'random'.")
@@ -153,6 +157,7 @@ def main():
     p_add('--batch-size', type=int, default=30000, help="Batch size for training.")
     p_add('--lr-end-factor', type=float, default=1.0, help="Final learning rate multiplier (linear scheduler).")
     p_add('--lambda-MP', type=float, default=1.0, help="Reweight factor for MP class. MP weight = lambda_MP / (1+lambda_MP), MR weight = 1/(1+lambda_MP).")
+
     args = parser.parse_args()
 
     if args.run_name:
@@ -233,8 +238,7 @@ def main():
         bp_cols = sorted([k for k in keys if k.startswith('bp_')], key=numerical_sort_key)
         rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
         feature_cols = bp_cols + rp_cols
-        if args.use_ebv:
-            feature_cols.append('ebv')
+        feature_cols.append('ebv')
         
         print("Extracting features (this may take a moment)...")
         train_data_list = []
@@ -265,26 +269,19 @@ def main():
     # --- Optimization: Pre-normalize Data ---
     # L2-normalize input features once here instead of in every forward pass
     print("Pre-normalizing data (L2)...")
-    if args.use_ebv:
-        # ebv is the last column, do not normalize it
-        X_train_to_norm = X_train[:, :-1]
-        X_test_to_norm = X_test[:, :-1]
-        ebv_train = X_train[:, -1:]
-        ebv_test = X_test[:, -1:]
-        
-        train_norms = np.linalg.norm(X_train_to_norm, axis=1, keepdims=True)
-        X_train_normed = X_train_to_norm / (train_norms + 1e-8)
-        X_train = np.hstack([X_train_normed, ebv_train])
-        
-        test_norms = np.linalg.norm(X_test_to_norm, axis=1, keepdims=True)
-        X_test_normed = X_test_to_norm / (test_norms + 1e-8)
-        X_test = np.hstack([X_test_normed, ebv_test])
-    else:
-        train_norms = np.linalg.norm(X_train, axis=1, keepdims=True)
-        X_train = X_train / (train_norms + 1e-8)
-        
-        test_norms = np.linalg.norm(X_test, axis=1, keepdims=True)
-        X_test = X_test / (test_norms + 1e-8)
+    # ebv is the last column, do not normalize it
+    X_train_to_norm = X_train[:, :-1]
+    X_test_to_norm = X_test[:, :-1]
+    ebv_train = X_train[:, -1:]
+    ebv_test = X_test[:, -1:]
+    
+    train_norms = np.linalg.norm(X_train_to_norm, axis=1, keepdims=True)
+    X_train_normed = X_train_to_norm / (train_norms + 1e-8)
+    X_train = np.hstack([X_train_normed, ebv_train])
+    
+    test_norms = np.linalg.norm(X_test_to_norm, axis=1, keepdims=True)
+    X_test_normed = X_test_to_norm / (test_norms + 1e-8)
+    X_test = np.hstack([X_test_normed, ebv_test])
 
     # --- Device Selection & Optimization ---
     if args.device:
@@ -365,6 +362,8 @@ def main():
     train_losses = []
     test_losses = []
     test_accs = []
+    
+
 
     print("Starting training...")
     for epoch in range(epochs):
@@ -379,6 +378,8 @@ def main():
             loss = (loss_unreduced * w).mean()
             loss.backward()
             optimizer.step()
+            
+
 
         scheduler.step()
 
@@ -459,24 +460,22 @@ def main():
     
     fig.tight_layout()
     out_img = 'linear.png'
-    if args.use_ebv:
-        out_img = 'linear_ebv.png'
     out_img = os.path.join(out_dir, out_img)
     fig.savefig(out_img, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"Training complete. Loss curve saved to {out_img}")
     print(f"Final Test Accuracy: {test_accs[-1]:.4f}")
 
-    # --- Save Weights ---
+    # --- Save Weights (Latest) ---
     print("Saving model weights...")
-    weights = model.fc.weight.detach().cpu().numpy().flatten()
-    bias = model.fc.bias.detach().cpu().item()
+    original_model = model._orig_mod if hasattr(model, '_orig_mod') else model
+    weights = original_model.fc.weight.detach().cpu().numpy().flatten()
+    bias = original_model.fc.bias.detach().cpu().item()
     
     out_csv = 'linear_model_weights.csv'
     weights_img = 'weights_plot.png'
-    if args.use_ebv:
-        out_csv = 'linear_model_weights_ebv.csv'
-        weights_img = 'weights_plot_ebv.png'
+    
+
     
     out_csv = os.path.join(out_dir, out_csv)
     weights_img = os.path.join(out_dir, weights_img)
@@ -486,11 +485,11 @@ def main():
         f.write(f"BIAS,{bias}\n")
         for name, w in zip(feature_cols, weights):
             f.write(f"{name},{w}\n")
-    print(f"Weights saved to {out_csv} (Total features: {len(feature_cols)})")
+    print(f"Latest weights saved to {out_csv} (Total features: {len(feature_cols)})")
 
-    # Automatically trigger visualize_weights and evaluate_all
+    # Automatically trigger visualize_weights and evaluate_all for LATEST
     visualize_weights(out_csv, weights_img)
-    evaluate_all(out_csv, args.use_ebv, out_dir)
+    evaluate_all(out_csv, out_dir, suffix='')
 
 if __name__ == "__main__":
     main()
