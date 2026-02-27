@@ -149,7 +149,7 @@ def main():
     p_add('--test-file', type=str, default=None, help="Path to test H5 file. Overrides --data-split.")
     p_add('--feh-threshold', type=float, default=-2.0, help="[Fe/H] threshold defining the boundary between MP and MR classes.")
     p_add('--hidden-dim', type=int, default=2, help="Hidden dimension (currently unused).")
-    p_add('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help="Optimizer type: 'adam' or 'sgd'.")
+    p_add('--optimizer', type=str, default='adam', choices=['adam', 'sgd', 'irls'], help="Optimizer type: 'adam', 'sgd', or 'irls'.")
     p_add('--lr', type=float, default=1.0, help="Initial learning rate.")
     p_add('--momentum', type=float, default=0.0, help="Momentum factor for SGD optimizer. Ignored if --optimizer=adam.")
     p_add('--weight-decay', type=float, default=0.0, help="Weight decay factor for L2 regularization.")
@@ -201,28 +201,30 @@ def main():
     test_file = args.test_file
 
     def find_data_split(split, root='.'):
-        # 1. Look for a directory that contains the split name (e.g., 'random' or 'low_temp')
-        found_dir = None
+        # 1. Look for directories that contain the split name (e.g., 'random' or 'low_temp')
         for dirpath, dirnames, _ in os.walk(root):
             for d in dirnames:
                 if split.lower() in d.lower():
                     found_dir = os.path.join(dirpath, d)
-                    break
-            if found_dir:
-                break
-        
-        if not found_dir:
-            return None, None
-            
-        # 2. In that directory, look for .h5 files containing 'train' and 'test'
-        t_f, te_f = None, None
-        for f in os.listdir(found_dir):
-            if f.endswith('.h5'):
-                if 'train' in f.lower():
-                    t_f = os.path.join(found_dir, f)
-                elif 'test' in f.lower():
-                    te_f = os.path.join(found_dir, f)
-        return t_f, te_f
+                    
+                    # 2. In this directory, look for .h5 files containing 'train' and 'test'
+                    t_f, te_f = None, None
+                    try:
+                        files = os.listdir(found_dir)
+                    except OSError:
+                        continue
+
+                    for f in files:
+                        if f.endswith('.h5'):
+                            if 'train' in f.lower():
+                                t_f = os.path.join(found_dir, f)
+                            elif 'test' in f.lower():
+                                te_f = os.path.join(found_dir, f)
+                    
+                    # If we found both, return them. Otherwise, keep searching other directories.
+                    if t_f and te_f:
+                        return t_f, te_f
+        return None, None
 
     if train_file is None or test_file is None:
         train_file, test_file = find_data_split(args.data_split)
@@ -332,13 +334,15 @@ def main():
             lr=args.lr,
             weight_decay=args.weight_decay,
         )
-    else:
+    elif args.optimizer == 'sgd':
         optimizer = optim.SGD(
             model.parameters(),
             lr=args.lr,
             momentum=args.momentum,
             weight_decay=args.weight_decay,
         )
+    else:
+        optimizer = None
 
     from torch.utils.data import TensorDataset, DataLoader
 
@@ -352,12 +356,15 @@ def main():
     epochs = args.epochs
 
     from torch.optim.lr_scheduler import LinearLR
-    scheduler = LinearLR(
-        optimizer,
-        start_factor=1.0,
-        end_factor=args.lr_end_factor,
-        total_iters=epochs,
-    )
+    if optimizer is not None:
+        scheduler = LinearLR(
+            optimizer,
+            start_factor=1.0,
+            end_factor=args.lr_end_factor,
+            total_iters=epochs,
+        )
+    else:
+        scheduler = None
 
     train_losses = []
     test_losses = []
@@ -369,19 +376,61 @@ def main():
     for epoch in range(epochs):
         # ---- Forward + backward pass ----
         model.train()
-        for batch_x, batch_y in train_loader:
-            # batch_x, batch_y are already on device
-            optimizer.zero_grad()
-            out = model(batch_x)
-            loss_unreduced = criterion(out, batch_y)
-            w = w_mr * batch_y + w_mp * (1 - batch_y)
-            loss = (loss_unreduced * w).mean()
-            loss.backward()
-            optimizer.step()
-            
+        if args.optimizer == 'irls':
+            with torch.no_grad():
+                # Full batch IRLS (Iteratively Reweighted Least Squares) step
+                out = model(X_train_t)
+                p = torch.sigmoid(out)
+                
+                N_tr = X_train_t.size(0)
+                c = w_mr * y_train_t + w_mp * (1 - y_train_t)
+                
+                # Clamp probabilities to avoid numerical instability
+                p = torch.clamp(p, 1e-6, 1 - 1e-6)
+                
+                R_vec = (c * p * (1 - p)) / N_tr
+                diff = (c * (p - y_train_t)) / N_tr
+                
+                X_pad = torch.cat([X_train_t, torch.ones(X_train_t.size(0), 1, dtype=torch.float32, device=device)], dim=1)
+                
+                g_pad = (X_pad.T @ diff).view(-1)
+                w_current = model.fc.weight.data.view(-1)
+                b_current = model.fc.bias.data
+                w_pad_current = torch.cat([w_current, b_current])
+                
+                wd = args.weight_decay
+                g_pad[:-1] += wd * w_current
+                
+                H = (X_pad * R_vec).T @ X_pad
+                H_reg = wd * torch.eye(H.size(0), device=device)
+                H_reg[-1, -1] = 0.0 # No weight decay on bias
+                H += H_reg
+                # Small damping factor
+                H += 1e-5 * torch.eye(H.size(0), device=device)
+                
+                try:
+                    delta = torch.linalg.solve(H, -g_pad)
+                except Exception as e:
+                    print(f"Warning: IRLS solve failed {e}. Using pseudo-inverse.")
+                    delta = torch.linalg.pinv(H) @ (-g_pad)
+                    
+                w_pad_new = w_pad_current + args.lr * delta
+                
+                model.fc.weight.data = w_pad_new[:-1].view(1, -1)
+                model.fc.bias.data = w_pad_new[-1:]
+        else:
+            for batch_x, batch_y in train_loader:
+                # batch_x, batch_y are already on device
+                optimizer.zero_grad()
+                out = model(batch_x)
+                loss_unreduced = criterion(out, batch_y)
+                w = w_mr * batch_y + w_mp * (1 - batch_y)
+                loss = (loss_unreduced * w).mean()
+                loss.backward()
+                optimizer.step()
 
-
-        scheduler.step()
+        if scheduler is not None:
+            scheduler.step()
 
         # ---- Eval pass: train loss (post-epoch, comparable to test loss) ----
         model.eval()

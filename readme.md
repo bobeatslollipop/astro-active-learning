@@ -10,7 +10,7 @@ This generates `random_train_set.h5` and `random_test_set.h5` inside the `random
 ## Training Linear Classifier
 To train the model:
 ```bash
-python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer adam --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random
+python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer irls --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 0.1 --weight-decay 0.0 --momentum 0.0 --data-split random
 ```
 
 All outputs (weights, loss plots, and evaluation confusion matrices) will be saved in the `linear_{run_name}` directory.
@@ -21,13 +21,13 @@ All outputs (weights, loss plots, and evaluation confusion matrices) will be sav
 | :--- | :--- | :--- | :--- |
 | `--run-name` | `str` | `None` | Name of the run. Outputs will be saved to `linear_{run_name}/`. |
 
-| `--data-split` | `str` | `random` | Which dataset split to use. Choices are `random` or `low_temp`. |
+| `--data-split` | `str` | `random` | Semantic name for the dataset split. Triggers auto-discovery of H5 files. (See below) |
 | `--train-file` | `str` | `None` | Path to custom train H5 file. Overrides `--data-split`. |
 | `--test-file`| `str` | `None` | Path to custom test H5 file. Overrides `--data-split`. |
 | `--lambda-MP` | `float` | `2.0` | Reweight factor for Metal-Poor (MP) class. MP weight = $\lambda_{MP} / (1+\lambda_{MP})$, MR weight = $1/(1+\lambda_{MP})$. |
 | `--feh-threshold` | `float` | `-2.0` | [Fe/H] threshold defining the boundary between MP and MR classes. |
 | `--seed` | `int` | `42` | Random seed for reproducibility. |
-| `--optimizer` | `str` | `adam` | Optimizer to use: `adam` or `sgd`. |
+| `--optimizer` | `str` | `adam` | Optimizer to use: `adam`, `sgd`, or `irls` (Iteratively Reweighted Least Squares). |
 | `--lr` | `float` | `1.0` | Initial learning rate. |
 | `--lr-end-factor`| `float` | `1.0` | Final learning rate multiplier (linear scheduler). |
 | `--epochs` | `int` | `500` | Number of training epochs. |
