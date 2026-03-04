@@ -3,7 +3,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import re
 import os
@@ -67,7 +66,6 @@ def evaluate_all(weights_file, out_dir, suffix=''):
         bp_cols = sorted([k for k in keys if k.startswith('bp_')], key=numerical_sort_key)
         rp_cols = sorted([k for k in keys if k.startswith('rp_')], key=numerical_sort_key)
         feature_cols = bp_cols + rp_cols
-        norm_cols = set(feature_cols) 
         feature_cols.append('ebv')
         
         full_feh = f['feh'][:].astype(np.float64)
@@ -148,7 +146,6 @@ def main():
     p_add('--train-file', type=str, default=None, help="Path to train H5 file. Overrides --data-split.")
     p_add('--test-file', type=str, default=None, help="Path to test H5 file. Overrides --data-split.")
     p_add('--feh-threshold', type=float, default=-2.0, help="[Fe/H] threshold defining the boundary between MP and MR classes.")
-    p_add('--hidden-dim', type=int, default=2, help="Hidden dimension (currently unused).")
     p_add('--optimizer', type=str, default='adam', choices=['adam', 'sgd', 'irls'], help="Optimizer type: 'adam', 'sgd', or 'irls'.")
     p_add('--lr', type=float, default=1.0, help="Initial learning rate.")
     p_add('--momentum', type=float, default=0.0, help="Momentum factor for SGD optimizer. Ignored if --optimizer=adam.")
@@ -437,7 +434,6 @@ def main():
         epoch_train_loss = 0.0
         with torch.no_grad():
             for batch_x, batch_y in train_loader:
-                # batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 out = model(batch_x)
                 loss_unreduced = criterion(out, batch_y)
                 w = w_mr * batch_y + w_mp * (1 - batch_y)
@@ -523,9 +519,6 @@ def main():
     
     out_csv = 'linear_model_weights.csv'
     weights_img = 'weights_plot.png'
-    
-
-    
     out_csv = os.path.join(out_dir, out_csv)
     weights_img = os.path.join(out_dir, weights_img)
 

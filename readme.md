@@ -51,7 +51,7 @@ Visualize high-dimensional BP/RP embeddings using UMAP, t-SNE, or PCA, colored b
   ```bash
   python visualize_embedding.py --method umap --threshold -2.0 --continuous
   ```
-- **Error Diagnosis**: Use `--eval_weights` to overlay classification errors (false positives/negatives) as large triangles on the plot.
+- **Error Diagnosis and Decision Boundary**: Use `--eval_weights <path_to_csv>` to overlay classification errors (false positives/negatives) as large triangles on the plot, and draw the linear classifier's decision boundary (`Logit = 0`).
   ```bash
-  python visualize_embedding.py --method umap --threshold -2.0 --continuous --eval_weights
+  python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
   ```

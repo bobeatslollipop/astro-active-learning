@@ -18,14 +18,14 @@ def visualize_large_h5(
     random_state=42,
     feh_classify=False,  # If True: binary red/blue; If False: continuous heatmap
     feh_threshold=None,  # If None: random sampling; If value: balanced class sampling
-    red_blue_ratio=2.0,  # Ratio of red to blue samples
+    red_blue_ratio=1.0,  # Ratio of red(MP) to blue(MR) samples
     eval_weights=None,   # Path to linear classifier weights CSV
 ):
     """
     Sample a subset of data from a large normalized H5 file (columnar or 2D) and visualize.
     Also loads the 'feh' column for the sampled indices.
     - feh_classify=False  → continuous [Fe/H] colorbar heatmap (default)
-    - feh_classify=True   → binary scatter: feh > feh_threshold = red, feh ≤ feh_threshold = blue
+    - feh_classify=True   → binary scatter: feh < feh_threshold = red(MP), feh ≥ feh_threshold = blue(MR)
     """
     if not os.path.exists(file_path):
         print(f"Error: File '{file_path}' not found.")
@@ -33,6 +33,7 @@ def visualize_large_h5(
 
     feh_values = None
     y_pred = None
+    logits_out = None
 
     try:
         with h5py.File(file_path, 'r') as f:
@@ -76,31 +77,31 @@ def visualize_large_h5(
             if feh_threshold is not None and has_feh:
                 # ---- Balanced class sampling ----
                 # Read the full feh column first to determine class membership,
-                # then draw k = min(N_blue, n_samples) samples from each class.
+                # then draw k = min(N_mp, n_samples) samples from each class.
                 print("feh_classify=True: loading full feh to build balanced sample...")
                 full_feh = f['feh'][:].astype(np.float64)
 
                 all_idx = np.arange(total_rows)
-                blue_pool = all_idx[full_feh <  feh_threshold]   # feh <  threshold
-                red_pool  = all_idx[full_feh >= feh_threshold]   # feh >= threshold
-                N_blue = len(blue_pool)
-                N_red  = len(red_pool)
+                mp_pool = all_idx[full_feh <  feh_threshold]   # feh <  threshold
+                mr_pool = all_idx[full_feh >= feh_threshold]   # feh >= threshold
+                N_mp = len(mp_pool)
+                N_mr = len(mr_pool)
 
                 
-                # Calculates max possible blue samples satisfying all constraints:
-                # 1. k_blue <= N_blue
-                # 2. k_blue <= n_samples
-                # 3. k_blue * ratio <= N_red
-                k_blue = min(N_blue, n_samples, int(N_red / red_blue_ratio))
-                k_red = int(k_blue * red_blue_ratio)
+                # Calculates max possible MP samples satisfying all constraints:
+                # 1. k_mp <= N_mp
+                # 2. k_mp <= n_samples
+                # 3. k_mp * ratio <= N_mr
+                k_mp = min(N_mp, n_samples, int(N_mr / red_blue_ratio))
+                k_mr = int(k_mp * red_blue_ratio)
                 
-                print(f"  Blue pool (feh < {feh_threshold}): {N_blue}  |  "
-                      f"Red pool (feh >= {feh_threshold}): {N_red}")
-                print(f"  Sampling {k_blue} Blue and {k_red} Red (Ratio: {red_blue_ratio})")
+                print(f"  MP pool (feh < {feh_threshold}): {N_mp}  |  "
+                      f"MR pool (feh >= {feh_threshold}): {N_mr}")
+                print(f"  Sampling {k_mp} MP (Red) and {k_mr} MR (Blue) (MR/MP Ratio: {red_blue_ratio})")
 
-                blue_idx = np.random.choice(blue_pool, k_blue, replace=False)
-                red_idx  = np.random.choice(red_pool,  k_red, replace=False)
-                indices  = np.concatenate([blue_idx, red_idx])
+                mp_idx = np.random.choice(mp_pool, k_mp, replace=False)
+                mr_idx = np.random.choice(mr_pool, k_mr, replace=False)
+                indices = np.concatenate([mp_idx, mr_idx])
                 indices.sort()
 
                 # Keep per-sample class labels aligned with indices order
@@ -189,6 +190,7 @@ def visualize_large_h5(
                                 print(f"Warning: feature '{feat}' needed by weights but not in H5.")
                                 
                     y_pred = (logits > 0.0).astype(int)
+                    logits_out = logits.copy()
 
     except Exception as e:
         print(f"Error processing H5 file: {e}")
@@ -268,19 +270,19 @@ def visualize_large_h5(
             below = valid_mask & (feh_values <  feh_threshold)
             n_above = above.sum()
             n_below = below.sum()
-            print(f"  feh >= {feh_threshold}: {n_above} (red),  "
-                  f"feh < {feh_threshold}: {n_below} (blue)")
+            print(f"  feh >= {feh_threshold}: {n_above} (Blue),  "
+                  f"feh < {feh_threshold}: {n_below} (Red)")
 
-            # Plot metal-rich (red) on top so rare metal-poor stand out
-            ax.scatter(
-                embedding[below, 0], embedding[below, 1],
-                s=2, alpha=0.5, c='royalblue',
-                label=f'[Fe/H] < {feh_threshold}  (n={n_below})',
-            )
+            # Plot metal-rich (Blue) first, then rare metal-poor (Red) on top so they stand out
             ax.scatter(
                 embedding[above, 0], embedding[above, 1],
-                s=2, alpha=0.5, c='crimson',
+                s=2, alpha=0.5, c='royalblue',
                 label=f'[Fe/H] >= {feh_threshold}  (n={n_above})',
+            )
+            ax.scatter(
+                embedding[below, 0], embedding[below, 1],
+                s=2, alpha=0.5, c='crimson',
+                label=f'[Fe/H] < {feh_threshold}  (n={n_below})',
             )
 
             ax.legend(markerscale=4, fontsize=11, loc='best')
@@ -300,7 +302,7 @@ def visualize_large_h5(
                 embedding[valid_mask, 0], embedding[valid_mask, 1],
                 s=1, alpha=0.6,
                 c=feh_values[valid_mask],
-                cmap='RdYlBu',   # blue = metal-poor, red = metal-rich
+                cmap='RdYlBu',   # red = metal-poor, blue = metal-rich
                 vmin=vmin, vmax=vmax
             )
 
@@ -328,8 +330,8 @@ def visualize_large_h5(
             mr_as_mp = valid_mask & (y_true == 1) & (y_pred == 0)
             
             # Helper to determine marker colors
-            # If continuous: use the color from the heatmap for that feh value
-            # If binary: use the standard crimson/royalblue
+            # If binary: map the marker color to what the model *predicted* 
+            # so the triangles stand out against their *true* background class.
             if not use_binary_plot:
                 # Need the same normalization as the main scatter
                 norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
@@ -337,23 +339,40 @@ def visualize_large_h5(
                 colors_mp_as_mr = cmap(norm(feh_values[mp_as_mr]))
                 colors_mr_as_mp = cmap(norm(feh_values[mr_as_mp]))
             else:
-                colors_mp_as_mr = 'crimson'
-                colors_mr_as_mp = 'royalblue'
+                colors_mp_as_mr = 'crimson'    # Predicted MR (Actually MP) gets Red true background color
+                colors_mr_as_mp = 'royalblue'  # Predicted MP (Actually MR) gets Blue true background color
 
             if mp_as_mr.sum() > 0:
                 ax.scatter(
                     embedding[mp_as_mr, 0], embedding[mp_as_mr, 1],
                     marker='^', s=30, alpha=0.9, c=colors_mp_as_mr, edgecolors='black', linewidths=0.6,
-                    label=f'Err: MP \u2192 MR (n={mp_as_mr.sum()})'
+                    label=f'Predicted MR (Actually MP) (n={mp_as_mr.sum()})'
                 )
             if mr_as_mp.sum() > 0:
                 ax.scatter(
                     embedding[mr_as_mp, 0], embedding[mr_as_mp, 1],
                     marker='^', s=30, alpha=0.9, c=colors_mr_as_mp, edgecolors='black', linewidths=0.6,
-                    label=f'Err: MR \u2192 MP (n={mr_as_mp.sum()})'
+                    label=f'Predicted MP (Actually MR) (n={mr_as_mp.sum()})'
                 )
                 
-            ax.legend(markerscale=1.5, fontsize=11, loc='best')
+            if logits_out is not None:
+                try:
+                    ax.tricontour(
+                        embedding[:, 0], embedding[:, 1],
+                        logits_out, levels=[0.0],
+                        colors='black', linewidths=2.5, linestyles='dashed'
+                    )
+                    import matplotlib.lines as mlines
+                    boundary_line = mlines.Line2D([], [], color='black', linewidth=2.5, linestyle='dashed', label='Linear Decision Boundary')
+                    handles, labels = ax.get_legend_handles_labels()
+                    handles.append(boundary_line)
+                    ax.legend(handles=handles, markerscale=1.5, fontsize=11, loc='best')
+                except Exception as e:
+                    print(f"Failed to plot boundary tricontour: {e}")
+                    ax.legend(markerscale=1.5, fontsize=11, loc='best')
+            else:
+                ax.legend(markerscale=1.5, fontsize=11, loc='best')
+                
             feh_img = feh_img.replace('.png', '_eval.png')
 
         ax.set_xlabel("Component 1", fontsize=12)
@@ -371,7 +390,7 @@ if __name__ == "__main__":
     p.add_argument("--method", type=str, default='umap', choices=['umap', 'tsne', 'pca'])
     p.add_argument("--threshold", type=float, default=None, help="Fe/H threshold for balanced sampling. If None, uses random sampling.")
     p.add_argument("--continuous", action="store_true", help="Use continuous heatmap for plotting")
-    p.add_argument("--ratio", type=float, default=2.0, help="Red to Blue ratio for balanced sampling")
+    p.add_argument("--ratio", type=float, default=1.0, help="Red to Blue ratio for balanced sampling")
     p.add_argument("--eval_weights", nargs='?', const='linear_model_weights.csv', default=None, 
                    help="Path to weights CSV to evaluate and highlight classification errors (default: linear_model_weights.csv)")
     args = p.parse_args()
