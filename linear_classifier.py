@@ -529,9 +529,14 @@ def main():
             f.write(f"{name},{w}\n")
     print(f"Latest weights saved to {out_csv} (Total features: {len(feature_cols)})")
 
-    # Automatically trigger visualize_weights and evaluate_all for LATEST
     visualize_weights(out_csv, weights_img)
     evaluate_all(out_csv, out_dir, suffix='')
+
+    import json
+    params_file = os.path.join(out_dir, "params.json")
+    with open(params_file, 'w', encoding='utf-8') as f:
+        json.dump(vars(args), f, indent=4)
+    print(f"Saved run parameters to {params_file}")
 
 if __name__ == "__main__":
     main()

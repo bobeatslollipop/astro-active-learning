@@ -142,8 +142,14 @@ def evaluate_all(weights_file, out_dir, cutoff=None, feh_threshold=-2.0, suffix=
         precision_mp, recall_mp, _ = precision_recall_curve(y_true_mp, scores_mp)
         ap_mp = average_precision_score(y_true_mp, scores_mp)
         
-        precision_mr, recall_mr, _ = precision_recall_curve(y_true_mr, scores_mr)
-        ap_mr = average_precision_score(y_true_mr, scores_mr)
+        # Calculate native regression boundary metrics for MP (< threshold)
+        y_pred_mp = (y_pred < feh_threshold).astype(int)
+        native_tp = np.sum((y_true_mp == 1) & (y_pred_mp == 1))
+        native_fp = np.sum((y_true_mp == 0) & (y_pred_mp == 1))
+        native_fn = np.sum((y_true_mp == 1) & (y_pred_mp == 0))
+        
+        native_prec = native_tp / (native_tp + native_fp) if (native_tp + native_fp) > 0 else 0
+        native_rec = native_tp / (native_tp + native_fn) if (native_tp + native_fn) > 0 else 0
         
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         
@@ -158,15 +164,19 @@ def evaluate_all(weights_file, out_dir, cutoff=None, feh_threshold=-2.0, suffix=
         axes[0].legend(loc="lower right")
         axes[0].grid(True, linestyle='--', alpha=0.5)
         
-        # PR Plot
-        axes[1].plot(recall_mp, precision_mp, color='red', lw=2, label=f'MP (< {feh_threshold}) AP={ap_mp:.3f}')
-        axes[1].plot(recall_mr, precision_mr, color='blue', lw=2, label=f'MR (>= {feh_threshold}) AP={ap_mr:.3f}')
+        # PR Plot (Only for MP)
+        # Remove the artificial sklearn endpoint (Recall=0.0, Precision=1.0) so it doesn't break autoscaling 
+        plot_p = precision_mp[:-1]
+        plot_r = recall_mp[:-1]
+        
+        axes[1].plot(plot_r, plot_p, color='red', lw=2, label=f'MP (< {feh_threshold}) AP={ap_mp:.3f}')
+        axes[1].plot(native_rec, native_prec, marker='*', markersize=16, color='gold', markeredgecolor='black', label=f'Model pred cut at {feh_threshold}\n(Prec={native_prec:.3f}, Rec={native_rec:.3f})')
         axes[1].set_xlim([0.0, 1.0])
-        axes[1].set_ylim([0.0, 1.05])
-        axes[1].set_xlabel('Recall')
-        axes[1].set_ylabel('Precision')
-        axes[1].set_title('Precision-Recall Curves For Both Classes')
-        axes[1].legend(loc="lower left")
+        axes[1].set_ylim([0.0, max(max(plot_p), native_prec) * 1.1 + 0.01])
+        axes[1].set_xlabel('Recall (True Positive Rate)')
+        axes[1].set_ylabel('Precision (Positive Predictive Value)')
+        axes[1].set_title(f'Focus: MP (< {feh_threshold}) Precision-Recall')
+        axes[1].legend(loc="upper left")
         axes[1].grid(True, linestyle='--', alpha=0.5)
         
         plt.tight_layout()
@@ -550,6 +560,12 @@ def main():
 
     visualize_weights(out_csv, weights_img)
     evaluate_all(out_csv, out_dir, cutoff=args.cutoff, feh_threshold=args.feh_threshold, suffix='')
+    
+    import json
+    params_file = os.path.join(out_dir, "params.json")
+    with open(params_file, 'w', encoding='utf-8') as f:
+        json.dump(vars(args), f, indent=4)
+    print(f"Saved run parameters to {params_file}")
 
 if __name__ == "__main__":
     main()

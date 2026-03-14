@@ -413,8 +413,13 @@ def main():
     torch.save(model.state_dict(), out_model)
     print(f"Model saved to {out_model}")
 
-    # Automatically trigger evaluate_all
     evaluate_all(model, device, out_dir)
+
+    import json
+    params_file = os.path.join(out_dir, "params.json")
+    with open(params_file, 'w', encoding='utf-8') as f:
+        json.dump(vars(args), f, indent=4)
+    print(f"Saved run parameters to {params_file}")
 
 if __name__ == "__main__":
     main()
