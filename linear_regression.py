@@ -53,7 +53,7 @@ def visualize_weights(csv_path, output_img):
     plt.close(fig)
     print(f"Plot saved to {output_img}")
 
-def evaluate_all(weights_file, out_dir, cutoff=None, suffix=''):
+def evaluate_all(weights_file, out_dir, cutoff=None, feh_threshold=-2.0, suffix=''):
     import csv
     print(f"Evaluating on all data (suffix: '{suffix}')...")
     with open(weights_file, 'r') as f:
@@ -122,6 +122,62 @@ def evaluate_all(weights_file, out_dir, cutoff=None, suffix=''):
     plt.close(fig)
     print(f"Saved regression scatter plot to {out_file}.")
 
+    # --- ROC and PR Curves ---
+    from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
+    
+    # Class 1 (Positive for our interest): Fe/H < feh_threshold
+    # Score for Class 1: -y_pred (since lower predicted feh means more likely to be < threshold)
+    y_true_mp = (y_true < feh_threshold).astype(int)
+    scores_mp = -y_pred
+    
+    # Class 0: Fe/H >= feh_threshold
+    # Score for Class 0: y_pred
+    y_true_mr = (y_true >= feh_threshold).astype(int)
+    scores_mr = y_pred
+    
+    if len(np.unique(y_true_mp)) > 1:
+        fpr, tpr, _ = roc_curve(y_true_mp, scores_mp)
+        roc_auc = auc(fpr, tpr)
+        
+        precision_mp, recall_mp, _ = precision_recall_curve(y_true_mp, scores_mp)
+        ap_mp = average_precision_score(y_true_mp, scores_mp)
+        
+        precision_mr, recall_mr, _ = precision_recall_curve(y_true_mr, scores_mr)
+        ap_mr = average_precision_score(y_true_mr, scores_mr)
+        
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # ROC Plot
+        axes[0].plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.3f})')
+        axes[0].plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        axes[0].set_xlim([0.0, 1.0])
+        axes[0].set_ylim([0.0, 1.05])
+        axes[0].set_xlabel('False Positive Rate (FPR)')
+        axes[0].set_ylabel('True Positive Rate (TPR)')
+        axes[0].set_title(f'ROC Curve (Threshold = {feh_threshold})')
+        axes[0].legend(loc="lower right")
+        axes[0].grid(True, linestyle='--', alpha=0.5)
+        
+        # PR Plot
+        axes[1].plot(recall_mp, precision_mp, color='red', lw=2, label=f'MP (< {feh_threshold}) AP={ap_mp:.3f}')
+        axes[1].plot(recall_mr, precision_mr, color='blue', lw=2, label=f'MR (>= {feh_threshold}) AP={ap_mr:.3f}')
+        axes[1].set_xlim([0.0, 1.0])
+        axes[1].set_ylim([0.0, 1.05])
+        axes[1].set_xlabel('Recall')
+        axes[1].set_ylabel('Precision')
+        axes[1].set_title('Precision-Recall Curves For Both Classes')
+        axes[1].legend(loc="lower left")
+        axes[1].grid(True, linestyle='--', alpha=0.5)
+        
+        plt.tight_layout()
+        curve_name = f'roc_pr_curve_all_data{suffix}.png'
+        curve_file = os.path.join(out_dir, curve_name)
+        plt.savefig(curve_file, dpi=300)
+        plt.close(fig)
+        print(f"Saved ROC and PR curves to {curve_file}.")
+    else:
+        print(f"Skipping ROC/PR curves since there is no target label mix at threshold {feh_threshold}.")
+
 class LinearRegressionModel(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
@@ -152,6 +208,7 @@ def main():
     p_add('--batch-size', type=int, default=30000, help="Batch size for training.")
     p_add('--lr-end-factor', type=float, default=1.0, help="Final learning rate multiplier (linear scheduler).")
     p_add('--low-feh-weight', type=float, default=1.0, help="Weight multiplier for samples with true Fe/H < -2.0")
+    p_add('--feh-threshold', type=float, default=-2.0, help="[Fe/H] threshold defining the boundary between classes for ROC/PR evaluation.")
     p_add('--cutoff', type=float, default=None, help="If set, points with true Fe/H > cutoff will be excluded.")
 
     args = parser.parse_args()
@@ -492,7 +549,7 @@ def main():
     print(f"Latest weights saved to {out_csv} (Total features: {len(feature_cols)})")
 
     visualize_weights(out_csv, weights_img)
-    evaluate_all(out_csv, out_dir, cutoff=args.cutoff, suffix='')
+    evaluate_all(out_csv, out_dir, cutoff=args.cutoff, feh_threshold=args.feh_threshold, suffix='')
 
 if __name__ == "__main__":
     main()
