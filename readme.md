@@ -11,6 +11,8 @@ This generates `random_train_set.h5` and `random_test_set.h5` inside the `random
 To train the model:
 ```bash
 python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer irls --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 0.1 --weight-decay 0.0 --momentum 0.0 --data-split random
+
+python3 linear_regression.py --run-name default_run --seed 42 --optimizer exact --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random --low-feh-weight 5.0 --cutoff 10
 ```
 
 All outputs (weights, loss plots, and evaluation confusion matrices) will be saved in the `linear_{run_name}` directory.
@@ -34,6 +36,8 @@ All outputs (weights, loss plots, and evaluation confusion matrices) will be sav
 | `--batch-size` | `int` | `30000` | Batch size for training. |
 | `--weight-decay` | `float` | `0.0` | Weight decay factor for L2 regularization. |
 | `--momentum` | `float` | `0.0` | Momentum factor for SGD optimizer. Ignored if `--optimizer=adam`. |
+| `--low-feh-weight` | `float` | `1.0` | Regression only: Weight multiplier for samples with true Fe/H < -2.0. |
+| `--cutoff` | `float` | `None` | Regression only: Exclude star properties whose target Fe/H is strictly greater than this value during both training and evaluation. |
 
 ### Embedding Visualization
 

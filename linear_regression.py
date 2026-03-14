@@ -53,7 +53,7 @@ def visualize_weights(csv_path, output_img):
     plt.close(fig)
     print(f"Plot saved to {output_img}")
 
-def evaluate_all(weights_file, out_dir, suffix=''):
+def evaluate_all(weights_file, out_dir, cutoff=None, suffix=''):
     import csv
     print(f"Evaluating on all data (suffix: '{suffix}')...")
     with open(weights_file, 'r') as f:
@@ -71,6 +71,8 @@ def evaluate_all(weights_file, out_dir, suffix=''):
         
         full_feh = f['feh'][:].astype(np.float64)
         valid_mask = np.isfinite(full_feh)
+        if cutoff is not None:
+            valid_mask &= (full_feh <= cutoff)
         feh_valid = full_feh[valid_mask]
         
         y_true = feh_valid
@@ -149,6 +151,8 @@ def main():
     p_add('--epochs', type=int, default=50, help="Number of training epochs.")
     p_add('--batch-size', type=int, default=30000, help="Batch size for training.")
     p_add('--lr-end-factor', type=float, default=1.0, help="Final learning rate multiplier (linear scheduler).")
+    p_add('--low-feh-weight', type=float, default=1.0, help="Weight multiplier for samples with true Fe/H < -2.0")
+    p_add('--cutoff', type=float, default=None, help="If set, points with true Fe/H > cutoff will be excluded.")
 
     args = parser.parse_args()
 
@@ -248,6 +252,17 @@ def main():
     y_train = np.nan_to_num(y_train)
     y_test = np.nan_to_num(y_test)
     
+    if args.cutoff is not None:
+        print(f"Applying cutoff: excluding points with Fe/H > {args.cutoff}")
+        train_mask = y_train <= args.cutoff
+        test_mask = y_test <= args.cutoff
+        
+        X_train, y_train = X_train[train_mask], y_train[train_mask]
+        X_test, y_test = X_test[test_mask], y_test[test_mask]
+        
+        print(f"Filtered Train: {len(y_train)}")
+        print(f"Filtered Test:  {len(y_test)}")
+    
     print("Pre-normalizing data (L2)...")
     X_train_to_norm = X_train[:, :-1]
     X_test_to_norm = X_test[:, :-1]
@@ -311,13 +326,24 @@ def main():
 
     from torch.utils.data import TensorDataset, DataLoader
 
-    train_dataset = TensorDataset(X_train_t, y_train_t)
-    test_dataset  = TensorDataset(X_test_t,  y_test_t)
+    if args.low_feh_weight != 1.0:
+        print(f"Applying sample weights: weight={args.low_feh_weight} for Fe/H < -2.0, weight=1.0 otherwise")
+        sample_weights = torch.ones_like(y_train_t)
+        sample_weights[y_train_t < -2.0] = args.low_feh_weight
+    else:
+        sample_weights = torch.ones_like(y_train_t)
+        
+    train_dataset = TensorDataset(X_train_t, y_train_t, sample_weights)
+    test_dataset  = TensorDataset(X_test_t,  y_test_t, torch.ones_like(y_test_t))
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader  = DataLoader(test_dataset,  batch_size=args.batch_size, shuffle=False)
 
-    epochs = args.epochs
+    if args.optimizer == 'exact':
+        print("Using exact closed-form solver, overriding epochs to 1.")
+        epochs = 1
+    else:
+        epochs = args.epochs
 
     from torch.optim.lr_scheduler import LinearLR
     if optimizer is not None:
@@ -341,9 +367,16 @@ def main():
             with torch.no_grad():
                 X_pad = torch.cat([X_train_t, torch.ones(X_train_t.size(0), 1, dtype=torch.float32, device=device)], dim=1)
                 y_tr_view = y_train_t.view(-1, 1)
+                W_diag = sample_weights.view(-1, 1)
                 
-                Xy = X_pad.T @ y_tr_view
-                XX = X_pad.T @ X_pad
+                # Weighted Least Squares: X^T W X w = X^T W y
+                # We can express this by multiplying X and y by sqrt(W)
+                W_sqrt = torch.sqrt(W_diag)
+                X_pad_w = X_pad * W_sqrt
+                y_tr_w = y_tr_view * W_sqrt
+                
+                Xy = X_pad_w.T @ y_tr_w
+                XX = X_pad_w.T @ X_pad_w
                 
                 wd = args.weight_decay
                 H_reg = wd * torch.eye(X_pad.size(1), device=device)
@@ -363,11 +396,11 @@ def main():
                 model.fc.weight.data = w_pad_new[:-1].view(1, -1)
                 model.fc.bias.data = w_pad_new[-1:]
         else:
-            for batch_x, batch_y in train_loader:
+            for batch_x, batch_y, batch_w in train_loader:
                 optimizer.zero_grad()
                 out = model(batch_x)
                 loss_unreduced = criterion(out, batch_y)
-                loss = loss_unreduced.mean()
+                loss = (loss_unreduced * batch_w).mean()
                 loss.backward()
                 optimizer.step()
 
@@ -377,10 +410,10 @@ def main():
         model.eval()
         epoch_train_loss = 0.0
         with torch.no_grad():
-            for batch_x, batch_y in train_loader:
+            for batch_x, batch_y, batch_w in train_loader:
                 out = model(batch_x)
                 loss_unreduced = criterion(out, batch_y)
-                loss = loss_unreduced.mean()
+                loss = (loss_unreduced * batch_w).mean()
                 epoch_train_loss += loss.item() * batch_x.size(0)
         epoch_train_loss /= len(train_dataset)
         train_losses.append(epoch_train_loss)
@@ -389,7 +422,7 @@ def main():
         all_test_preds = []
         all_test_y = []
         with torch.no_grad():
-            for batch_x, batch_y in test_loader:
+            for batch_x, batch_y, batch_w in test_loader:
                 out = model(batch_x)
                 loss_unreduced = criterion(out, batch_y)
                 loss = loss_unreduced.mean()
@@ -416,13 +449,14 @@ def main():
     
     ax1.set_xlabel('Epoch', fontsize=12)
     ax1.set_ylabel('MSE Loss', fontsize=12)
-    l1 = ax1.plot(range(1, epochs+1), train_losses, label='Train Loss', color='blue', linewidth=2)
-    l2 = ax1.plot(range(1, epochs+1), test_losses, label='Test Loss', color='red', linewidth=2)
+    marker = 'o' if epochs == 1 else None
+    l1 = ax1.plot(range(1, epochs+1), train_losses, label='Train Loss', color='blue', linewidth=2, marker=marker)
+    l2 = ax1.plot(range(1, epochs+1), test_losses, label='Test Loss', color='red', linewidth=2, marker=marker)
     ax1.grid(True, linestyle='--', alpha=0.7)
 
     ax2 = ax1.twinx()
     ax2.set_ylabel('Test R2 Score', fontsize=12, color='green')
-    l3 = ax2.plot(range(1, epochs+1), test_r2_scores, label='Test R2', color='green', linewidth=2, linestyle=':')
+    l3 = ax2.plot(range(1, epochs+1), test_r2_scores, label='Test R2', color='green', linewidth=2, linestyle=':', marker=marker)
     ax2.tick_params(axis='y', labelcolor='green')
 
     lns = l1 + l2 + l3
@@ -458,7 +492,7 @@ def main():
     print(f"Latest weights saved to {out_csv} (Total features: {len(feature_cols)})")
 
     visualize_weights(out_csv, weights_img)
-    evaluate_all(out_csv, out_dir, suffix='')
+    evaluate_all(out_csv, out_dir, cutoff=args.cutoff, suffix='')
 
 if __name__ == "__main__":
     main()
