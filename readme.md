@@ -12,7 +12,7 @@ To train the model:
 ```bash
 python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer irls --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 0.1 --weight-decay 0.0 --momentum 0.0 --data-split random
 
-python3 linear_regression.py --run-name weight_20 --seed 42 --optimizer exact --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random --low-feh-weight 20.0 --cutoff 10 --feh-threshold -2.0
+python3 linear_regression.py --run-name weight_0.3 --seed 42 --optimizer exact --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random --low-feh-weight 0.3 --cutoff 10 --feh-threshold -2.0
 ```
 
 All outputs (weights, loss plots, and evaluation confusion matrices) will be saved in the `linear_{run_name}` directory.
