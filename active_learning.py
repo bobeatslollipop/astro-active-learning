@@ -234,7 +234,7 @@ def _save_plots(results, out_dir):
     for key, label, color, marker in [
         ("accuracy", "Accuracy", "#4A90D9", "o"),
         ("recall_MP", "MP Recall", "#E07070", "s"),
-        ("f1_MP", "MP F1", "#5A9E7A", "^"),
+        ("precision_MP", "MP Precision", "#5A9E7A", "^"),
     ]:
         ax.plot(qs, [r[key] for r in results], f"{marker}-", label=label, color=color, lw=2)
     ax.set(xlabel="Number of Queries", ylabel="Score", ylim=(0, 1.05))
