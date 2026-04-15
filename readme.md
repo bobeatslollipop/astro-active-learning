@@ -85,11 +85,11 @@ python active_learning.py `
   --full-data-file  bp_rp_lamost_normalized.h5 `
   --feh-threshold   -2.0 `
   --strategy        random `
-  --total-queries   500 `
-  --eval-every      50 `
-  --lambda-MP       1.0 `
+  --total-queries   10000 `
+  --eval-every      100 `
+  --lambda-MP       0.05 `
   --C               5.0 `
-  --eval-size       50000 `
+  --eval-size       100000 `
   --seed            42 `
   --out-dir         al_random
 ```

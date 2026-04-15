@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import time
 
 import h5py
 import numpy as np
@@ -51,21 +52,43 @@ def load_features_and_labels(h5_path, feh_threshold=-2.0, max_samples=None, seed
     """Load BP/RP + ebv features and binary Fe/H label from an h5 file.
 
     Returns (X, y, source_ids) where X is L2-normalised, y ∈ {0=MP, 1=MR}.
+
+    Optimisations over the original:
+      - Uses float32 instead of float64 (halves memory, speeds up compute).
+      - Reads HDF5 slices directly via sorted fancy indexing instead of
+        loading entire columns then sub-indexing.
     """
     with h5py.File(h5_path, "r") as f:
         cols = _feature_cols(list(f.keys()))
         n = f[cols[0]].shape[0]
 
         # Optional subsample
-        idx = np.arange(n)
         if max_samples is not None and max_samples < n:
             idx = np.sort(np.random.RandomState(seed).choice(n, max_samples, replace=False))
+        else:
+            idx = None  # read everything – use slice for speed
 
-        X = np.column_stack([np.nan_to_num(f[c][:][idx], nan=0.0).astype(np.float64) for c in cols])
-        feh = f["feh"][:][idx].astype(np.float64)
-        valid = np.isfinite(feh)
+        # --- Fast column read ---------------------------------------------------
+        # When idx is None we read the whole dataset at once (contiguous I/O).
+        # When idx is a sorted int array HDF5 can still do a relatively fast
+        # fancy-index read without materialising the full column first.
+        if idx is None:
+            parts = [np.nan_to_num(f[c][()], nan=0.0).astype(np.float32) for c in cols]
+            feh = f["feh"][()].astype(np.float32)
+            sids = f["source_id"][()] if "source_id" in f else None
+        else:
+            parts = [np.nan_to_num(f[c][idx], nan=0.0).astype(np.float32) for c in cols]
+            feh = f["feh"][idx].astype(np.float32)
+            sids = f["source_id"][idx] if "source_id" in f else None
+
+        X = np.column_stack(parts)
+        del parts  # free intermediate list
+
+    valid = np.isfinite(feh)
+    if not valid.all():
         X, feh = X[valid], feh[valid]
-        sids = f["source_id"][:][idx][valid] if "source_id" in f else None
+        if sids is not None:
+            sids = sids[valid]
 
     # L2-normalise spectral coefficients (everything except ebv)
     end = -1 if cols[-1] == "ebv" else X.shape[1]
@@ -87,28 +110,57 @@ def query_random(X_pool, clf, n, rng, **kw):
 def query_uncertainty(X_pool, clf, n, rng, **kw):
     """Pick points whose predicted probability is closest to 0.5."""
     probs = clf.predict_proba(X_pool)[:, 1]
-    return np.argsort(np.abs(probs - 0.5))[:n]
+    # Use argpartition for O(n) instead of full sort O(n log n)
+    uncertainty = np.abs(probs - 0.5)
+    if n >= len(uncertainty):
+        return np.arange(len(uncertainty))
+    top_n = np.argpartition(uncertainty, n)[:n]
+    return top_n[np.argsort(uncertainty[top_n])]
 
 
 def query_margin(X_pool, clf, n, rng, **kw):
     """KWIK-style: pick points with smallest |decision_function| (closest to boundary)."""
-    return np.argsort(np.abs(clf.decision_function(X_pool)))[:n]
+    dvals = np.abs(clf.decision_function(X_pool))
+    if n >= len(dvals):
+        return np.arange(len(dvals))
+    top_n = np.argpartition(dvals, n)[:n]
+    return top_n[np.argsort(dvals[top_n])]
 
 
 def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, **kw):
-    """Greedy core-set: iteratively pick the pool point farthest from current labeled set."""
+    """Greedy core-set: iteratively pick the pool point farthest from current labeled set.
+
+    Optimised: maintain a running min-distance vector instead of recomputing
+    the full distance matrix every iteration.  Complexity drops from
+    O(n_sub * |S| * iters) to O(n_sub * (|S_init| + iters)).
+    """
     MAX_POOL = 5000
-    sub_idx = rng.choice(len(X_pool), min(MAX_POOL, len(X_pool)), replace=False) if len(X_pool) > MAX_POOL else np.arange(len(X_pool))
+    pool_len = len(X_pool)
+    if pool_len > MAX_POOL:
+        sub_idx = rng.choice(pool_len, MAX_POOL, replace=False)
+    else:
+        sub_idx = np.arange(pool_len)
     X_sub = X_pool[sub_idx]
 
-    S = X_labeled.copy()
-    chosen = []
-    for _ in range(min(n, len(X_sub))):
-        min_dists = cdist(X_sub, S).min(axis=1)          # (|sub|,)
+    n_pick = min(n, len(X_sub))
+
+    # Initial min distances from X_sub to all current labeled points.
+    # Compute in chunks to limit peak memory when X_labeled is very large.
+    CHUNK = 2000
+    min_dists = np.full(len(X_sub), np.inf, dtype=np.float32)
+    for start in range(0, len(X_labeled), CHUNK):
+        dists = cdist(X_sub, X_labeled[start:start + CHUNK], metric="sqeuclidean")
+        np.minimum(min_dists, dists.min(axis=1), out=min_dists)
+    del dists
+
+    chosen = np.empty(n_pick, dtype=np.intp)
+    for i in range(n_pick):
         best = np.argmax(min_dists)
-        chosen.append(best)
-        S = np.vstack([S, X_sub[best:best + 1]])
-        min_dists[best] = -1  # prevent re-selection
+        chosen[i] = best
+        # Update min_dists with distances to the newly chosen point.
+        new_dists = ((X_sub - X_sub[best]) ** 2).sum(axis=1)  # sqeuclidean, no alloc via cdist
+        np.minimum(min_dists, new_dists, out=min_dists)
+        min_dists[best] = -1.0  # prevent re-selection
     return sub_idx[chosen]
 
 
@@ -206,6 +258,8 @@ def run_active_learning(args):
     rng = np.random.RandomState(args.seed)
     os.makedirs(args.out_dir, exist_ok=True)
 
+    t0 = time.perf_counter()
+
     # 1. Load data
     print(f"Loading warm-start data from {args.warm_start_file} ...")
     X_warm, y_warm, sid_warm = load_features_and_labels(
@@ -214,6 +268,9 @@ def run_active_learning(args):
     print(f"Loading full population from {args.full_data_file} ...")
     X_full, y_full, sid_full = load_features_and_labels(
         args.full_data_file, args.feh_threshold, args.pool_max, args.seed + 1)
+
+    t_load = time.perf_counter() - t0
+    print(f"  Data loaded in {t_load:.1f}s")
 
     # 2. Build pool = full minus warm-start
     if sid_warm is not None and sid_full is not None:
@@ -225,27 +282,38 @@ def run_active_learning(args):
 
     X_pool, y_pool = X_full[pool_mask].copy(), y_full[pool_mask].copy()
 
+    # Free the full arrays (only pool & eval are needed hereafter)
+    del X_full, y_full, sid_full, sid_warm
+
     # 3. Evaluation set
-    eval_n = min(args.eval_size, len(X_full))
-    eval_idx = rng.choice(len(X_full), eval_n, replace=False)
-    X_eval, y_eval = X_full[eval_idx], y_full[eval_idx]
+    eval_n = min(args.eval_size, len(X_pool))
+    eval_idx = rng.choice(len(X_pool), eval_n, replace=False)
+    X_eval, y_eval = X_pool[eval_idx], y_pool[eval_idx]
 
     for tag, n, mp in [("Warm-start", len(X_warm), (y_warm == 0).sum()),
-                       ("Full pop.", len(X_full), (y_full == 0).sum()),
                        ("Pool", len(X_pool), (y_pool == 0).sum()),
                        ("Eval set", eval_n, (y_eval == 0).sum())]:
         print(f"  {tag}: {n} (MP={mp}, MR={n - mp})")
 
-    # 4. Initialise
-    X_labeled, y_labeled = X_warm.copy(), y_warm.copy()
+    # 4. Initialise — pre-allocate labeled arrays to avoid repeated vstack
+    max_labeled = len(X_warm) + args.total_queries
+    n_features = X_warm.shape[1]
+    X_labeled = np.empty((max_labeled, n_features), dtype=np.float32)
+    y_labeled = np.empty(max_labeled, dtype=np.int32)
+    n_labeled = len(X_warm)
+    X_labeled[:n_labeled] = X_warm
+    y_labeled[:n_labeled] = y_warm
+    del X_warm, y_warm  # free
+
     available = np.ones(len(X_pool), dtype=bool)
     strategy_fn = STRATEGIES[args.strategy]
     results = []
 
     # Helper: train → evaluate → record → log
     def snapshot(n_queries):
-        clf = train_logistic(X_labeled, y_labeled, args.lambda_MP, args.C)
-        m = _record(evaluate(clf, X_eval, y_eval), n_queries, y_labeled)
+        Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
+        clf = train_logistic(Xl, yl, args.lambda_MP, args.C)
+        m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
         results.append(m)
         _log(m)
         return clf
@@ -256,18 +324,25 @@ def run_active_learning(args):
     # 6. Active learning loop
     queried = 0
     while queried < args.total_queries and available.any():
-        batch = min(args.eval_every, args.total_queries - queried, available.sum())
+        batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
         avail_idx = np.where(available)[0]
 
-        sel = strategy_fn(X_pool[avail_idx], clf, batch, rng, X_labeled=X_labeled)
+        sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
+                          X_labeled=X_labeled[:n_labeled])
         pool_idx = avail_idx[sel]
 
-        X_labeled = np.vstack([X_labeled, X_pool[pool_idx]])
-        y_labeled = np.concatenate([y_labeled, y_pool[pool_idx]])
+        # Append to pre-allocated arrays (no vstack/concatenate)
+        n_new = len(pool_idx)
+        X_labeled[n_labeled:n_labeled + n_new] = X_pool[pool_idx]
+        y_labeled[n_labeled:n_labeled + n_new] = y_pool[pool_idx]
+        n_labeled += n_new
         available[pool_idx] = False
-        queried += len(pool_idx)
+        queried += n_new
 
         clf = snapshot(queried)
+
+    t_total = time.perf_counter() - t0
+    print(f"\nTotal runtime: {t_total:.1f}s  (data loading: {t_load:.1f}s)")
 
     # 7. Save outputs
     with open(os.path.join(args.out_dir, "results.json"), "w") as f:
