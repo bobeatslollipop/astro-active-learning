@@ -84,10 +84,10 @@ python active_learning.py `
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 `
   --full-data-file  bp_rp_lamost_normalized.h5 `
   --feh-threshold   -2.0 `
-  --strategy        random `
+  --strategy        purely_random `
   --total-queries   20000 `
   --eval-every      100 `
-  --lambda-MP       0.01 `
+  --lambda-MP       0.005 `
   --C               20.0 `
   --eval-size       200000 `
   --seed            42 

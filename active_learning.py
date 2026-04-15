@@ -133,6 +133,11 @@ def query_margin(X_pool, clf, n, rng, **kw):
     return top_n[np.argsort(dvals[top_n])]
 
 
+def query_purely_random(X_pool, clf, n, rng, **kw):
+    """Uniform random sampling starting from an empty labeled set (no warm-start bias)."""
+    return rng.choice(len(X_pool), min(n, len(X_pool)), replace=False)
+
+
 def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, **kw):
     """Greedy core-set: iteratively pick the pool point farthest from current labeled set.
 
@@ -175,6 +180,7 @@ STRATEGIES = {
     "uncertainty": query_uncertainty,
     "margin": query_margin,
     "wasserstein": query_wasserstein,
+    "purely_random": query_purely_random,
 }
 
 
@@ -315,10 +321,15 @@ def run_active_learning(args):
     n_features = X_warm.shape[1]
     X_labeled = np.empty((max_labeled, n_features), dtype=np.float32)
     y_labeled = np.empty(max_labeled, dtype=np.int32)
-    n_labeled = len(X_warm)
-    X_labeled[:n_labeled] = X_warm
-    y_labeled[:n_labeled] = y_warm
-    del X_warm, y_warm  # free
+    if args.strategy == "purely_random":
+        # Start from an empty labeled set — ignore the biased warm-start data.
+        n_labeled = 0
+        del X_warm, y_warm
+    else:
+        n_labeled = len(X_warm)
+        X_labeled[:n_labeled] = X_warm
+        y_labeled[:n_labeled] = y_warm
+        del X_warm, y_warm  # free
 
     available = np.ones(len(X_pool), dtype=bool)
     strategy_fn = STRATEGIES[args.strategy]
@@ -327,14 +338,22 @@ def run_active_learning(args):
     # Helper: train → evaluate → record → log
     def snapshot(n_queries, prev_clf=None):
         Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
+        if len(np.unique(yl)) < 2:
+            # Both classes required; skip this checkpoint and keep previous clf.
+            print(f"[Query {n_queries:4d}] Skipped — only one class in labeled set so far.")
+            return prev_clf
         clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf)
         m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
         results.append(m)
         _log(m)
         return clf
 
-    # 5. Initial evaluation (no warm-start for the first fit)
-    clf = snapshot(0)
+    # 5. Initial evaluation
+    # For purely_random the labeled set starts empty, so skip the initial fit.
+    if args.strategy != "purely_random":
+        clf = snapshot(0)
+    else:
+        clf = None
 
     # 6. Active learning loop
     queried = 0
