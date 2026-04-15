@@ -108,14 +108,20 @@ def query_random(X_pool, clf, n, rng, **kw):
 
 
 def query_uncertainty(X_pool, clf, n, rng, **kw):
-    """Pick points whose predicted probability is closest to 0.5."""
+    """Soft uncertainty sampling: sample proportional to proximity to decision boundary.
+
+    Instead of deterministically picking the top-n most uncertain points
+    (which can cluster around the same boundary region), we treat uncertainty
+    scores as unnormalised sampling weights.  Points near p=0.5 get higher
+    probability but are not guaranteed to be selected, adding diversity.
+    """
     probs = clf.predict_proba(X_pool)[:, 1]
-    # Use argpartition for O(n) instead of full sort O(n log n)
-    uncertainty = np.abs(probs - 0.5)
-    if n >= len(uncertainty):
-        return np.arange(len(uncertainty))
-    top_n = np.argpartition(uncertainty, n)[:n]
-    return top_n[np.argsort(uncertainty[top_n])]
+    n = min(n, len(probs))
+    # score ∈ [0, 0.5]: higher means closer to boundary (more uncertain)
+    scores = 0.5 - np.abs(probs - 0.5)
+    scores += 1e-8  # ensure no zero weights
+    weights = scores / scores.sum()
+    return rng.choice(len(probs), n, replace=False, p=weights)
 
 
 def query_margin(X_pool, clf, n, rng, **kw):
@@ -174,13 +180,16 @@ STRATEGIES = {
 
 # ── Training & Evaluation ────────────────────────────────
 
-def train_logistic(X, y, lambda_MP=1.0, C=1.0):
+def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None):
     """Train logistic regression with dynamic class reweighting.
 
     lambda_MP specifies the desired *total* weight ratio:
         (n_MP * w_per_MP) / (n_MR * w_per_MR) = lambda_MP
     Per-sample weights are derived as:
         w_per_MP = lambda_MP * n_MR / n_MP,   w_per_MR = 1.0
+
+    If prev_clf is given, its coefficients are used to warm-start LBFGS
+    so that convergence takes only a few iterations.
     """
     n_MP, n_MR = int(np.sum(y == 0)), int(np.sum(y == 1))
     if n_MP == 0 or n_MR == 0:
@@ -189,7 +198,13 @@ def train_logistic(X, y, lambda_MP=1.0, C=1.0):
         w_MP = lambda_MP * n_MR / n_MP
         w_MR = 1.0
     clf = LogisticRegression(C=C, class_weight={0: w_MP, 1: w_MR},
-                             solver="lbfgs", max_iter=2000)
+                             solver="lbfgs", max_iter=2000,
+                             warm_start=True)
+    # Seed from previous solution so LBFGS starts near the optimum
+    if prev_clf is not None:
+        clf.coef_ = prev_clf.coef_.copy()
+        clf.intercept_ = prev_clf.intercept_.copy()
+        clf.classes_ = prev_clf.classes_.copy()
     clf.fit(X, y)
     return clf
 
@@ -310,15 +325,15 @@ def run_active_learning(args):
     results = []
 
     # Helper: train → evaluate → record → log
-    def snapshot(n_queries):
+    def snapshot(n_queries, prev_clf=None):
         Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
-        clf = train_logistic(Xl, yl, args.lambda_MP, args.C)
+        clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf)
         m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
         results.append(m)
         _log(m)
         return clf
 
-    # 5. Initial evaluation
+    # 5. Initial evaluation (no warm-start for the first fit)
     clf = snapshot(0)
 
     # 6. Active learning loop
@@ -339,7 +354,7 @@ def run_active_learning(args):
         available[pool_idx] = False
         queried += n_new
 
-        clf = snapshot(queried)
+        clf = snapshot(queried, prev_clf=clf)
 
     t_total = time.perf_counter() - t0
     print(f"\nTotal runtime: {t_total:.1f}s  (data loading: {t_load:.1f}s)")
