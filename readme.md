@@ -5,11 +5,23 @@ cd random_training
 python generate_dataset.py --seed 42 --file-path ../bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1
 cd ..
 ```
+
+```powershell
+cd random_training
+python generate_dataset.py --seed 42 --file-path ../bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1
+cd ..
+```
 This generates `random_train_set.h5` and `random_test_set.h5` inside the `random_training` folder.
 
 ## Training Linear Classifier
 To train the model:
 ```bash
+python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer irls --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 0.1 --weight-decay 0.0 --momentum 0.0 --data-split random
+
+python3 linear_regression.py --run-name weight_0.3 --seed 42 --optimizer exact --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random --low-feh-weight 0.3 --cutoff 10 --feh-threshold -2.0
+```
+
+```powershell
 python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer irls --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 0.1 --weight-decay 0.0 --momentum 0.0 --data-split random
 
 python3 linear_regression.py --run-name weight_0.3 --seed 42 --optimizer exact --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random --low-feh-weight 0.3 --cutoff 10 --feh-threshold -2.0
@@ -47,16 +59,28 @@ Visualize high-dimensional BP/RP embeddings using UMAP, t-SNE, or PCA, colored b
   ```bash
   python visualize_embedding.py --method umap
   ```
+  ```powershell
+  python visualize_embedding.py --method umap
+  ```
 - **Balanced Classification**: Use `--threshold` to enable balanced sampling (ensuring rare metal-poor stars are well-represented) and display binary Red/Blue classes.
   ```bash
+  python visualize_embedding.py --method umap --threshold -2.0
+  ```
+  ```powershell
   python visualize_embedding.py --method umap --threshold -2.0
   ```
 - **Balanced Heatmap**: Use both `--threshold` and `--continuous` to combine balanced sampling with a continuous color gradient.
   ```bash
   python visualize_embedding.py --method umap --threshold -2.0 --continuous
   ```
+  ```powershell
+  python visualize_embedding.py --method umap --threshold -2.0 --continuous
+  ```
 - **Error Diagnosis and Decision Boundary**: Use `--eval_weights <path_to_csv>` to overlay classification errors (false positives/negatives) as large triangles on the plot, and draw the linear classifier's decision boundary (`Logit = 0`).
   ```bash
+  python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
+  ```
+  ```powershell
   python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
   ```
 
@@ -69,14 +93,14 @@ python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
-  --strategy        uncertainty \
-  --total-queries   500 \
-  --eval-every      50 \
-  --lambda-MP       1.0 \
-  --C               1.0 \
-  --eval-size       50000 \
+  --strategy        wasserstein \
+  --total-queries   50000 \
+  --eval-every      500 \
+  --lambda-MP       0.05 \
+  --C               100.0 \
+  --eval-size       200000 \
   --seed            42 \
-  --out-dir         al_uncertainty
+  --out-dir         al_wasserstein
 ```
 
 ```powershell

@@ -163,35 +163,64 @@ def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
     import torch
     device = torch.device('cuda')
 
+    # Load everything to GPU float32 once. 1M stars * 100 features * 4 bytes ≈ 400MB.
+    # 24GB is plenty for even 10M-50M stars.
     X_sub = torch.tensor(X_pool, dtype=torch.float32, device=device)
     n_pick = min(n, len(X_sub))
+    
+    # Precompute squared norms: ||x-y||^2 = ||x||^2 + ||y||^2 - 2*x.y
+    X_sub_sq_norms = (X_sub**2).sum(dim=1)
 
     if 'min_dists' not in state:
         min_dists = torch.full((len(X_sub),), float('inf'), device=device)
         if X_labeled is not None and len(X_labeled) > 0:
-            print("  [GPU] Initializing global Wasserstein distances (will take ~10 seconds)...")
             X_lab = torch.tensor(X_labeled, dtype=torch.float32, device=device)
-            # Chunking to avoid VRAM OOM (X_pool chunks vs X_labeled chunks)
-            # 100,000 * 10,000 floats = 4GB peak VRAM matrix. Very safe for 16GB cards, highly saturated GPU usage.
-            CHUNK_P, CHUNK_L = 100000, 10000
+            X_lab_sq_norms = (X_lab**2).sum(dim=1)
+            
+            # --- Conservative VRAM Optimization: Safe Dynamic Chunking + In-place GEMM ---
+            try:
+                props = torch.cuda.get_device_properties(device)
+                free_vram = props.total_memory - torch.cuda.memory_allocated(device)
+                # Compute operations create intermediate matrices. To be extremely safe,
+                # we target only ~15% of the FREE VRAM for the base distance matrix chunk.
+                target_elements = int(free_vram * 0.15 / 4) 
+                CHUNK_L = 10000 
+                CHUNK_P = max(10000, target_elements // CHUNK_L)
+            except:
+                CHUNK_P, CHUNK_L = 50000, 10000
+
+            print(f"  [GPU] Initializing Wasserstein distances (Dynamic Chunks: {CHUNK_P}x{CHUNK_L})...")
+            
             for start_p in range(0, len(X_sub), CHUNK_P):
                 end_p = start_p + CHUNK_P
                 X_p_chunk = X_sub[start_p:end_p]
-                chunk_min_dists = torch.full((len(X_p_chunk),), float('inf'), device=device)
+                P_norms = X_sub_sq_norms[start_p:end_p].unsqueeze(1)
+                
+                chunk_min = torch.full((len(X_p_chunk),), float('inf'), device=device)
                 for start_l in range(0, len(X_lab), CHUNK_L):
-                    X_l_chunk = X_lab[start_l:start_l + CHUNK_L]
-                    dists = torch.cdist(X_p_chunk, X_l_chunk).pow_(2)
-                    torch.minimum(chunk_min_dists, dists.min(dim=1)[0], out=chunk_min_dists)
-                min_dists[start_p:end_p] = chunk_min_dists
-                # Print progress to ease anxiety during the ~90 second wait
-                if (start_p // CHUNK_P) % 10 == 0:
-                    print(f"    [GPU] Initialized {min(end_p, len(X_sub))} / {len(X_sub)} points...")
-            del X_lab, X_p_chunk, chunk_min_dists, dists
+                    end_l = start_l + CHUNK_L
+                    X_l_chunk = X_lab[start_l:end_l]
+                    L_norms = X_lab_sq_norms[start_l:end_l].unsqueeze(0)
+                    
+                    # Compute squared euclidean dists using in-place matmul (addmm) 
+                    # This avoids allocating multi-gigabyte intermediate tensors: dist = P^2 + L^2 - 2 * (P @ L.T)
+                    dists = P_norms + L_norms
+                    dists.addmm_(X_p_chunk, X_l_chunk.T, beta=1.0, alpha=-2.0)
+                    
+                    torch.minimum(chunk_min, dists.min(dim=1)[0], out=chunk_min)
+                    del dists # Free the large chunk immediately
+                
+                min_dists[start_p:end_p] = chunk_min
+                if (start_p // CHUNK_P) % 5 == 0:
+                    print(f"    [GPU] Initialized {min(end_p, len(X_sub))} / {len(X_sub)} stars...")
+            
+            del X_lab, X_lab_sq_norms
             torch.cuda.empty_cache()
     else:
         min_dists = state['min_dists'].to(device)
 
     chosen = []
+    # Vectorized Greedy Loop
     for _ in range(n_pick):
         if torch.isinf(min_dists[0]):
             best_idx = int(rng.choice(len(X_sub)))
@@ -199,8 +228,13 @@ def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
             best_idx = torch.argmax(min_dists).item()
             
         chosen.append(best_idx)
-        new_point = X_sub[best_idx].unsqueeze(0)
-        new_dists = ((X_sub - new_point) ** 2).sum(dim=1)
+        
+        # Speedup: norm_pool + norm_new - 2 * (pool @ new_point)
+        # Using torch.mv (matrix-vector) is much faster than explicit subtraction on GPU
+        new_pt = X_sub[best_idx]
+        new_pt_sq_norm = X_sub_sq_norms[best_idx]
+        new_dists = X_sub_sq_norms + new_pt_sq_norm - 2 * torch.mv(X_sub, new_pt)
+        
         torch.minimum(min_dists, new_dists, out=min_dists)
         min_dists[best_idx] = -1.0
 
