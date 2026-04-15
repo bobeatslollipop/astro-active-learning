@@ -138,41 +138,118 @@ def query_purely_random(X_pool, clf, n, rng, **kw):
     return rng.choice(len(X_pool), min(n, len(X_pool)), replace=False)
 
 
-def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, **kw):
-    """Greedy core-set: iteratively pick the pool point farthest from current labeled set.
-
-    Optimised: maintain a running min-distance vector instead of recomputing
-    the full distance matrix every iteration.  Complexity drops from
-    O(n_sub * |S| * iters) to O(n_sub * (|S_init| + iters)).
+def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
     """
-    MAX_POOL = 5000
-    pool_len = len(X_pool)
-    if pool_len > MAX_POOL:
-        sub_idx = rng.choice(pool_len, MAX_POOL, replace=False)
-    else:
-        sub_idx = np.arange(pool_len)
-    X_sub = X_pool[sub_idx]
+    Greedy core-set (Wasserstein approx).
+    Uses PyTorch (GPU) if available for instantaneous global search over millions of points.
+    Falls back to a batched numpy/scipy implementation if PyTorch is unavailable.
+    """
+    if state is None:
+        state = {}
 
+    try:
+        import torch
+        has_torch = True
+    except ImportError:
+        has_torch = False
+
+    if has_torch and torch.cuda.is_available():
+        return _query_wasserstein_torch(X_pool, n, rng, X_labeled, state)
+    else:
+        return _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state)
+
+
+def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
+    import torch
+    device = torch.device('cuda')
+
+    X_sub = torch.tensor(X_pool, dtype=torch.float32, device=device)
     n_pick = min(n, len(X_sub))
 
-    # Initial min distances from X_sub to all current labeled points.
-    # Compute in chunks to limit peak memory when X_labeled is very large.
-    CHUNK = 2000
-    min_dists = np.full(len(X_sub), np.inf, dtype=np.float32)
-    for start in range(0, len(X_labeled), CHUNK):
-        dists = cdist(X_sub, X_labeled[start:start + CHUNK], metric="sqeuclidean")
-        np.minimum(min_dists, dists.min(axis=1), out=min_dists)
-    del dists
+    if 'min_dists' not in state:
+        min_dists = torch.full((len(X_sub),), float('inf'), device=device)
+        if X_labeled is not None and len(X_labeled) > 0:
+            print("  [GPU] Initializing global Wasserstein distances (will take ~10 seconds)...")
+            X_lab = torch.tensor(X_labeled, dtype=torch.float32, device=device)
+            # Chunking to avoid VRAM OOM (X_pool chunks vs X_labeled chunks)
+            # 100,000 * 10,000 floats = 4GB peak VRAM matrix. Very safe for 16GB cards, highly saturated GPU usage.
+            CHUNK_P, CHUNK_L = 100000, 10000
+            for start_p in range(0, len(X_sub), CHUNK_P):
+                end_p = start_p + CHUNK_P
+                X_p_chunk = X_sub[start_p:end_p]
+                chunk_min_dists = torch.full((len(X_p_chunk),), float('inf'), device=device)
+                for start_l in range(0, len(X_lab), CHUNK_L):
+                    X_l_chunk = X_lab[start_l:start_l + CHUNK_L]
+                    dists = torch.cdist(X_p_chunk, X_l_chunk).pow_(2)
+                    torch.minimum(chunk_min_dists, dists.min(dim=1)[0], out=chunk_min_dists)
+                min_dists[start_p:end_p] = chunk_min_dists
+                # Print progress to ease anxiety during the ~90 second wait
+                if (start_p // CHUNK_P) % 10 == 0:
+                    print(f"    [GPU] Initialized {min(end_p, len(X_sub))} / {len(X_sub)} points...")
+            del X_lab, X_p_chunk, chunk_min_dists, dists
+            torch.cuda.empty_cache()
+    else:
+        min_dists = state['min_dists'].to(device)
 
-    chosen = np.empty(n_pick, dtype=np.intp)
-    for i in range(n_pick):
-        best = np.argmax(min_dists)
-        chosen[i] = best
-        # Update min_dists with distances to the newly chosen point.
-        new_dists = ((X_sub - X_sub[best]) ** 2).sum(axis=1)  # sqeuclidean, no alloc via cdist
+    chosen = []
+    for _ in range(n_pick):
+        if torch.isinf(min_dists[0]):
+            best_idx = int(rng.choice(len(X_sub)))
+        else:
+            best_idx = torch.argmax(min_dists).item()
+            
+        chosen.append(best_idx)
+        new_point = X_sub[best_idx].unsqueeze(0)
+        new_dists = ((X_sub - new_point) ** 2).sum(dim=1)
+        torch.minimum(min_dists, new_dists, out=min_dists)
+        min_dists[best_idx] = -1.0
+
+    mask = torch.ones(len(min_dists), dtype=torch.bool, device=device)
+    mask[chosen] = False
+    state['min_dists'] = min_dists[mask]
+    
+    return np.array(chosen, dtype=np.intp)
+
+
+def _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state):
+    """Fallback numpy implementation that uses the same global logic but limits initial search chunking on CPU."""
+    X_sub = X_pool
+    n_pick = min(n, len(X_sub))
+
+    if 'min_dists' not in state:
+        min_dists = np.full(len(X_sub), np.inf, dtype=np.float32)
+        if X_labeled is not None and len(X_labeled) > 0:
+            print("  [CPU] Initializing global Wasserstein distances (this might take a while on CPU)...")
+            # Limit chunk size strictly to avoid RAM explosion
+            CHUNK_P, CHUNK_L = 20000, 5000
+            for start_p in range(0, len(X_sub), CHUNK_P):
+                end_p = min(start_p + CHUNK_P, len(X_sub))
+                X_p_chunk = X_sub[start_p:end_p]
+                for start_l in range(0, len(X_labeled), CHUNK_L):
+                    end_l = min(start_l + CHUNK_L, len(X_labeled))
+                    # sqeuclidean directly
+                    dists = cdist(X_p_chunk, X_labeled[start_l:end_l], metric="sqeuclidean")
+                    np.minimum(min_dists[start_p:end_p], dists.min(axis=1), out=min_dists[start_p:end_p])
+    else:
+        min_dists = state['min_dists']
+
+    chosen = []
+    for _ in range(n_pick):
+        if np.isinf(min_dists[0]):
+            best_idx = int(rng.choice(len(X_sub)))
+        else:
+            best_idx = int(np.argmax(min_dists))
+            
+        chosen.append(best_idx)
+        new_dists = ((X_sub - X_sub[best_idx]) ** 2).sum(axis=1)
         np.minimum(min_dists, new_dists, out=min_dists)
-        min_dists[best] = -1.0  # prevent re-selection
-    return sub_idx[chosen]
+        min_dists[best_idx] = -1.0
+
+    mask = np.ones(len(min_dists), dtype=bool)
+    mask[chosen] = False
+    state['min_dists'] = min_dists[mask]
+    
+    return np.array(chosen, dtype=np.intp)
 
 
 STRATEGIES = {
@@ -357,12 +434,14 @@ def run_active_learning(args):
 
     # 6. Active learning loop
     queried = 0
+    strategy_state = {}
+    
     while queried < args.total_queries and available.any():
         batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
         avail_idx = np.where(available)[0]
 
         sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
-                          X_labeled=X_labeled[:n_labeled])
+                          X_labeled=X_labeled[:n_labeled], state=strategy_state)
         pool_idx = avail_idx[sel]
 
         # Append to pre-allocated arrays (no vstack/concatenate)

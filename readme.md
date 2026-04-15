@@ -84,14 +84,14 @@ python active_learning.py `
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 `
   --full-data-file  bp_rp_lamost_normalized.h5 `
   --feh-threshold   -2.0 `
-  --strategy        uncertainty `
+  --strategy        wasserstein `
   --total-queries   20000 `
   --eval-every      500 `
   --lambda-MP       0.05 `
   --C               100.0 `
   --eval-size       200000 `
   --seed            42 `
-  --out-dir         al_uncertainty
+  --out-dir         al_wasserstein
 ```
 
 Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `learning_curve.png`, `class_distribution.png`.
