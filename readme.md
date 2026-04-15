@@ -59,3 +59,66 @@ Visualize high-dimensional BP/RP embeddings using UMAP, t-SNE, or PCA, colored b
   ```bash
   python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
   ```
+
+## Active Learning (Warm Start)
+
+Trains a logistic regression classifier via active learning, starting from a biased initial set (e.g. low-$T_{\rm eff}$ stars) and iteratively querying the full population.
+
+```bash
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        uncertainty \
+  --total-queries   500 \
+  --eval-every      50 \
+  --lambda-MP       1.0 \
+  --C               1.0 \
+  --eval-size       50000 \
+  --seed            42 \
+  --out-dir         al_uncertainty
+```
+
+```powershell
+python active_learning.py `
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 `
+  --full-data-file  bp_rp_lamost_normalized.h5 `
+  --feh-threshold   -2.0 `
+  --strategy        random `
+  --total-queries   500 `
+  --eval-every      50 `
+  --lambda-MP       1.0 `
+  --C               1.0 `
+  --eval-size       50000 `
+  --seed            42 `
+  --out-dir         al_uncertainty
+```
+
+Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `learning_curve.png`, `class_distribution.png`.
+
+### Arguments
+
+| Argument | Default | Description |
+| :--- | :--- | :--- |
+| `--warm-start-file` | `bp_rp_lamost_normalized_low_teff.h5` | H5 file for the biased warm-start set. |
+| `--full-data-file` | `bp_rp_lamost_normalized.h5` | H5 file for the full population (pool + eval). |
+| `--feh-threshold` | `-2.0` | Fe/H cut: < threshold → MP (0), ≥ threshold → MR (1). |
+| `--strategy` | `uncertainty` | Query strategy: `random`, `uncertainty`, `margin`, `wasserstein`. |
+| `--total-queries` | `500` | Total points to query from the pool. |
+| `--eval-every` | `50` | Retrain and evaluate every k queries. |
+| `--lambda-MP` | `1.0` | Class reweight for MP in logistic regression. |
+| `--C` | `1.0` | Inverse regularisation strength. |
+| `--eval-size` | `100000` | Size of random eval subsample drawn from the full population. |
+| `--warm-start-max` | `None` | Cap warm-start size (subsampled if exceeded). |
+| `--pool-max` | `None` | Cap full-population size (subsampled if exceeded). |
+| `--seed` | `42` | Random seed. |
+| `--out-dir` | `al_{strategy}` | Output directory. |
+
+### Query Strategies
+
+| Strategy | Description |
+| :--- | :--- |
+| `random` | Uniform random sampling (baseline). |
+| `uncertainty` | Pick points with predicted probability closest to 0.5. |
+| `margin` | Pick points with smallest \|decision function\| (closest to boundary). |
+| `wasserstein` | Greedy core-set: maximise coverage of the full population. |
