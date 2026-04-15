@@ -123,8 +123,20 @@ STRATEGIES = {
 # ── Training & Evaluation ────────────────────────────────
 
 def train_logistic(X, y, lambda_MP=1.0, C=1.0):
-    """Train logistic regression with class reweighting."""
-    clf = LogisticRegression(C=C, class_weight={0: lambda_MP, 1: 1.0},
+    """Train logistic regression with dynamic class reweighting.
+
+    lambda_MP specifies the desired *total* weight ratio:
+        (n_MP * w_per_MP) / (n_MR * w_per_MR) = lambda_MP
+    Per-sample weights are derived as:
+        w_per_MP = lambda_MP * n_MR / n_MP,   w_per_MR = 1.0
+    """
+    n_MP, n_MR = int(np.sum(y == 0)), int(np.sum(y == 1))
+    if n_MP == 0 or n_MR == 0:
+        w_MP, w_MR = 1.0, 1.0
+    else:
+        w_MP = lambda_MP * n_MR / n_MP
+        w_MR = 1.0
+    clf = LogisticRegression(C=C, class_weight={0: w_MP, 1: w_MR},
                              solver="lbfgs", max_iter=2000)
     clf.fit(X, y)
     return clf
@@ -293,7 +305,7 @@ def main():
     a("--eval-every",     type=int, default=50,   help="Retrain & evaluate every k queries.")
 
     # Model
-    a("--lambda-MP", type=float, default=1.0, help="Class reweight for MP in logistic regression.")
+    a("--lambda-MP", type=float, default=1.0, help="Desired total-weight ratio MP/MR. Per-sample weights are auto-scaled so n_MP*w_MP / n_MR*w_MR = lambda_MP.")
     a("--C",         type=float, default=1.0, help="Inverse regularisation strength.")
 
     # Practical

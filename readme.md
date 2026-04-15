@@ -88,10 +88,10 @@ python active_learning.py `
   --total-queries   500 `
   --eval-every      50 `
   --lambda-MP       1.0 `
-  --C               1.0 `
+  --C               5.0 `
   --eval-size       50000 `
   --seed            42 `
-  --out-dir         al_uncertainty
+  --out-dir         al_random
 ```
 
 Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `learning_curve.png`, `class_distribution.png`.
@@ -106,7 +106,7 @@ Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `l
 | `--strategy` | `uncertainty` | Query strategy: `random`, `uncertainty`, `margin`, `wasserstein`. |
 | `--total-queries` | `500` | Total points to query from the pool. |
 | `--eval-every` | `50` | Retrain and evaluate every k queries. |
-| `--lambda-MP` | `1.0` | Class reweight for MP in logistic regression. |
+| `--lambda-MP` | `1.0` | Desired total-weight ratio MP/MR. Per-sample weights auto-scale: $w_{MP} = \lambda \cdot n_{MR}/n_{MP}$. |
 | `--C` | `1.0` | Inverse regularisation strength. |
 | `--eval-size` | `100000` | Size of random eval subsample drawn from the full population. |
 | `--warm-start-max` | `None` | Cap warm-start size (subsampled if exceeded). |
