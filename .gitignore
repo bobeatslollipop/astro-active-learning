@@ -9,8 +9,11 @@
 !/random_training/
 !/linear_0.1/
 !/skAI-main/
-!/al_purely_random/
-!/al_random/
-!/al_uncertainty/
-!/al_kmedianpp/
-!/al_kmedianpp_reweighted/
+!/al_purely_random_3k/
+!/al_random_3k/
+!/al_random_hard_3k/
+!/al_uncertainty_3k/
+!/al_kmedianpp_3k/
+!/al_kmedianpp_reweighted_3k/
+!/al_wasserstein_hard_3k/
+

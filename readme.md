@@ -93,16 +93,86 @@ python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
+  --strategy        purely_random \
+  --reweighting     none \
+  --total-queries   15000 \
+  --eval-every      500 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --out-dir         al_purely_random_15k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        uncertainty \
+  --reweighting     none \
+  --total-queries   15000 \
+  --eval-every      500 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --out-dir         al_uncertainty_15k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        random \
+  --reweighting     none \
+  --total-queries   15000 \
+  --eval-every      500 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --out-dir         al_random_15k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
   --strategy        wasserstein \
   --reweighting     hard \
-  --total-queries   5000 \
-  --eval-every      100 \
+  --total-queries   15000 \
+  --eval-every      500 \
   --lambda-MP       0.01 \
-  --wass-pool-size  60000 \
+  --wass-pool-size  50000 \
   --C               10000.0 \
-  --eval-size       200000 \
+  --eval-size       500000 \
   --seed            42 \
-  --out-dir         al_wasserstein_hard_5k
+  --out-dir         al_wasserstein_hard_15k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        random_hard \
+  --reweighting     hard \
+  --total-queries   15000 \
+  --eval-every      500 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --out-dir         al_random_hard_15k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        uncertainty \
+  --reweighting     hard \
+  --total-queries   15000 \
+  --eval-every      500 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --out-dir         al_uncertainty_hard_15k
 ```
 
 ```powershell

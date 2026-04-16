@@ -315,12 +315,10 @@ def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
     """CPU brute-force Wasserstein coupling (skAI-style find_Set).
 
     For each greedy step, evaluates WWD(S ∪ {u}, T) for every remaining
-    candidate u in T and picks the one that minimises it.  The key identity
-    used is:
-
-        WWD(S ∪ {u}, T) = (1/|T|) Σ_j min(base_min_j, d(u, t_j))
-
-    so after selecting u* we update  base_min_j ← min(base_min_j, d(u*, t_j)).
+    candidate u in T and picks the one that minimises it.  Uses an
+    incremental update: after selecting u*, only the columns j where
+    base_min actually decreased are re-evaluated, reducing per-step
+    cost from O(ps²) to O(ps × |changed|).
     """
     ps = len(T)
 
@@ -339,27 +337,40 @@ def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
 
     print(f"  [CPU] Wasserstein coupling: pool_size={ps}, selecting {n_pick}")
 
+    # Initial full WWD computation for all candidates
+    wwds = np.minimum(base_min[np.newaxis, :], intra_dists).mean(axis=1)  # (ps,)
+
     chosen = []
     available = np.ones(ps, dtype=bool)
 
     for k in range(n_pick):
-        # WWD_i = (1/ps) Σ_j min(base_min[j], intra_dists[i, j])
-        candidate_min = np.minimum(base_min[np.newaxis, :], intra_dists)  # (ps, ps)
-        wwds = candidate_min.mean(axis=1)  # (ps,)
-        wwds[~available] = np.inf
+        wwds_masked = wwds.copy()
+        wwds_masked[~available] = np.inf
 
-        best = int(np.argmin(wwds))
+        best = int(np.argmin(wwds_masked))
         chosen.append(best)
         available[best] = False
 
-        # Update: the selected point is now part of the source set
+        # Update base_min and find which columns j changed
+        old_base = base_min.copy()
         np.minimum(base_min, intra_dists[best], out=base_min)
+        changed = np.where(base_min < old_base)[0]
+
+        if len(changed) > 0:
+            # Incremental update: only recompute the contribution of changed columns
+            old_contribs = np.minimum(old_base[changed], intra_dists[:, changed])  # (ps, |changed|)
+            new_contribs = np.minimum(base_min[changed], intra_dists[:, changed])  # (ps, |changed|)
+            wwds += (new_contribs - old_contribs).sum(axis=1) / ps
 
     return chosen
 
 
 def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
-    """GPU brute-force Wasserstein coupling (skAI-style find_Set)."""
+    """GPU brute-force Wasserstein coupling (skAI-style find_Set).
+
+    Uses incremental WWD updates: after each selection, only columns
+    where base_min decreased are re-evaluated.
+    """
     import torch
     device = torch.device('cuda')
     ps = len(T)
@@ -390,21 +401,29 @@ def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
 
     print(f"  [GPU] Wasserstein coupling: pool_size={ps}, selecting {n_pick}")
 
+    # Initial full WWD computation
+    wwds = torch.minimum(base_min.unsqueeze(0).expand(ps, ps), intra_dists).mean(dim=1)
+
     chosen = []
     available = torch.ones(ps, dtype=torch.bool, device=device)
 
     for k in range(n_pick):
-        candidate_min = torch.minimum(
-            base_min.unsqueeze(0).expand(ps, ps), intra_dists)
-        wwds = candidate_min.mean(dim=1)
-        wwds[~available] = float('inf')
+        wwds_masked = wwds.clone()
+        wwds_masked[~available] = float('inf')
 
-        best = torch.argmin(wwds).item()
+        best = torch.argmin(wwds_masked).item()
         chosen.append(best)
         available[best] = False
 
+        # Update base_min and find changed columns
+        old_base = base_min.clone()
         torch.minimum(base_min, intra_dists[best], out=base_min)
-        del candidate_min, wwds
+        changed = torch.where(base_min < old_base)[0]
+
+        if len(changed) > 0:
+            old_contribs = torch.minimum(old_base[changed], intra_dists[:, changed])
+            new_contribs = torch.minimum(base_min[changed], intra_dists[:, changed])
+            wwds += (new_contribs - old_contribs).sum(dim=1) / ps
 
     del T_t, intra_dists
     torch.cuda.empty_cache()
@@ -909,6 +928,7 @@ def _save_plots(results, out_dir):
         vals = [r.get(key, float('nan')) for r in results]
         ax.plot(qs, vals, marker=marker, ls="-", label=label, color=color, lw=2, markersize=5)
     ax.set(xlabel="Number of Queries", ylabel="Average Log-Loss")
+    ax.set_yscale("log")
     ax.set_title("Per-Class Average Log-Loss", fontsize=14, fontweight="bold")
     ax.legend(fontsize=11); ax.grid(True, alpha=0.3)
     fig.tight_layout(); fig.savefig(os.path.join(out_dir, "learning_curve.png"), dpi=200); plt.close(fig)
@@ -1108,9 +1128,12 @@ def run_active_learning(args):
     # 6. Active learning loop
     queried = 0
     strategy_state = {}
-    halfway_point = args.total_queries // 2
-    clf_halfway = None  # will store a deep copy of the classifier at the halfway mark
-    halfway_queries = None
+    third_point = args.total_queries // 3
+    two_third_point = 2 * args.total_queries // 3
+    clf_one_third = None
+    clf_two_third = None
+    queries_one_third = None
+    queries_two_third = None
     
     while queried < args.total_queries and available.any():
         batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
@@ -1131,12 +1154,18 @@ def run_active_learning(args):
 
         clf = snapshot(queried, prev_clf=clf)
 
-        # Save a deep copy of the classifier at the halfway mark
-        if clf_halfway is None and queried >= halfway_point and clf is not None:
+        # Save deep copies at 1/3 and 2/3 marks for PR curve
+        if clf_one_third is None and queried >= third_point and clf is not None:
             import copy
-            clf_halfway = copy.deepcopy(clf)
-            halfway_queries = queried
-            print(f"  >> Saved halfway checkpoint at {queried} queries")
+            clf_one_third = copy.deepcopy(clf)
+            queries_one_third = queried
+            print(f"  >> Saved 1/3 checkpoint at {queried} queries")
+
+        if clf_two_third is None and queried >= two_third_point and clf is not None:
+            import copy
+            clf_two_third = copy.deepcopy(clf)
+            queries_two_third = queried
+            print(f"  >> Saved 2/3 checkpoint at {queried} queries")
 
     t_total = time.perf_counter() - t0
     print(f"\nTotal runtime: {t_total:.1f}s  (data loading: {t_load:.1f}s)")
@@ -1181,17 +1210,14 @@ def run_active_learning(args):
         plt.close(fig)
         print(f"\nSaved weight distribution plot to {wt_plot_path}")
     
-    print(f"\nLoading full population again for final evaluation ...")
-    X_full, y_full, _ = load_features_and_labels(
-        args.full_data_file, args.feh_threshold, None, args.seed + 1)
-    generate_confusion_matrix(clf, X_full, y_full, args.out_dir)
-
-    # Build list of (label, clf) pairs for multi-curve PR plot
+    # Build list of (label, clf) pairs for multi-curve PR plot (using eval set)
     pr_curves = []
-    if clf_halfway is not None:
-        pr_curves.append((f"Halfway ({halfway_queries} queries)", clf_halfway))
+    if clf_one_third is not None:
+        pr_curves.append((f"1/3 ({queries_one_third} queries)", clf_one_third))
+    if clf_two_third is not None:
+        pr_curves.append((f"2/3 ({queries_two_third} queries)", clf_two_third))
     pr_curves.append((f"Final ({queried} queries)", clf))
-    generate_pr_curve(pr_curves, X_full, y_full, args.out_dir)
+    generate_pr_curve(pr_curves, X_eval, y_eval, args.out_dir)
     
     print(f"\nAll outputs saved to {args.out_dir}/")
     return results
