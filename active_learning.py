@@ -159,89 +159,135 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
         return _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state)
 
 
-def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
-    import torch
-    device = torch.device('cuda')
+def _init_min_dists_torch(X_sub, X_sub_sq_norms, X_labeled, state, label="Wasserstein"):
+    """Shared GPU initialisation of min-distance vector from labeled points.
 
-    # Load everything to GPU float32 once. 1M stars * 100 features * 4 bytes ≈ 400MB.
-    # 24GB is plenty for even 10M-50M stars.
-    X_sub = torch.tensor(X_pool, dtype=torch.float32, device=device)
-    n_pick = min(n, len(X_sub))
-    
-    # Precompute squared norms for GEMM-based distance: ||x-y|| = sqrt(||x||^2 + ||y||^2 - 2*x.y)
-    X_sub_sq_norms = (X_sub**2).sum(dim=1)
+    Returns min_dists tensor on GPU.  Reads/writes state['min_dists'].
+    """
+    import torch
+    device = X_sub.device
 
     if 'min_dists' not in state:
         min_dists = torch.full((len(X_sub),), float('inf'), device=device)
         if X_labeled is not None and len(X_labeled) > 0:
             X_lab = torch.tensor(X_labeled, dtype=torch.float32, device=device)
             X_lab_sq_norms = (X_lab**2).sum(dim=1)
-            
-            # --- Conservative VRAM Optimization: Safe Dynamic Chunking + In-place GEMM ---
+
             try:
                 props = torch.cuda.get_device_properties(device)
                 free_vram = props.total_memory - torch.cuda.memory_allocated(device)
-                # Compute operations create intermediate matrices. To be extremely safe,
-                # we target only ~15% of the FREE VRAM for the base distance matrix chunk.
-                target_elements = int(free_vram * 0.15 / 4) 
-                CHUNK_L = 10000 
+                target_elements = int(free_vram * 0.15 / 4)
+                CHUNK_L = 10000
                 CHUNK_P = max(10000, target_elements // CHUNK_L)
             except:
                 CHUNK_P, CHUNK_L = 50000, 10000
 
-            print(f"  [GPU] Initializing Wasserstein distances (Dynamic Chunks: {CHUNK_P}x{CHUNK_L})...")
-            
+            print(f"  [GPU] Initializing {label} distances (Dynamic Chunks: {CHUNK_P}x{CHUNK_L})...")
+
             for start_p in range(0, len(X_sub), CHUNK_P):
                 end_p = start_p + CHUNK_P
                 X_p_chunk = X_sub[start_p:end_p]
                 P_norms = X_sub_sq_norms[start_p:end_p].unsqueeze(1)
-                
+
                 chunk_min = torch.full((len(X_p_chunk),), float('inf'), device=device)
                 for start_l in range(0, len(X_lab), CHUNK_L):
                     end_l = start_l + CHUNK_L
                     X_l_chunk = X_lab[start_l:end_l]
                     L_norms = X_lab_sq_norms[start_l:end_l].unsqueeze(0)
-                    
-                    # Compute Euclidean dists via GEMM: ||p-l|| = sqrt(||p||^2 + ||l||^2 - 2*p.l)
+
                     dists = P_norms + L_norms
                     dists.addmm_(X_p_chunk, X_l_chunk.T, beta=1.0, alpha=-2.0)
-                    dists.clamp_(min=0.0).sqrt_()  # clamp for numerical safety, then L2
-                    
+                    dists.clamp_(min=0.0).sqrt_()
+
                     torch.minimum(chunk_min, dists.min(dim=1)[0], out=chunk_min)
-                    del dists # Free the large chunk immediately
-                
+                    del dists
+
                 min_dists[start_p:end_p] = chunk_min
                 if (start_p // CHUNK_P) % 5 == 0:
                     print(f"    [GPU] Initialized {min(end_p, len(X_sub))} / {len(X_sub)} stars...")
-            
+
             del X_lab, X_lab_sq_norms
             torch.cuda.empty_cache()
     else:
         min_dists = state['min_dists'].to(device)
 
+    return min_dists
+
+
+def _init_min_dists_numpy(X_sub, X_labeled, state, label="Wasserstein"):
+    """Shared CPU initialisation of min-distance vector from labeled points.
+
+    Returns min_dists numpy array.  Reads/writes state['min_dists'].
+    """
+    if 'min_dists' not in state:
+        min_dists = np.full(len(X_sub), np.inf, dtype=np.float32)
+        if X_labeled is not None and len(X_labeled) > 0:
+            print(f"  [CPU] Initializing global {label} distances (this might take a while on CPU)...")
+            CHUNK_P, CHUNK_L = 20000, 5000
+            for start_p in range(0, len(X_sub), CHUNK_P):
+                end_p = min(start_p + CHUNK_P, len(X_sub))
+                X_p_chunk = X_sub[start_p:end_p]
+                for start_l in range(0, len(X_labeled), CHUNK_L):
+                    end_l = min(start_l + CHUNK_L, len(X_labeled))
+                    dists = cdist(X_p_chunk, X_labeled[start_l:end_l], metric="euclidean")
+                    np.minimum(min_dists[start_p:end_p], dists.min(axis=1), out=min_dists[start_p:end_p])
+    else:
+        min_dists = state['min_dists']
+
+    return min_dists
+
+
+def _update_min_dists_torch(min_dists, X_sub, X_sub_sq_norms, best_idx):
+    """Update min_dists after selecting best_idx (GPU)."""
+    import torch
+    new_pt = X_sub[best_idx]
+    new_pt_sq_norm = X_sub_sq_norms[best_idx]
+    new_dists = (X_sub_sq_norms + new_pt_sq_norm - 2 * torch.mv(X_sub, new_pt)).clamp(min=0.0).sqrt()
+    torch.minimum(min_dists, new_dists, out=min_dists)
+    min_dists[best_idx] = -1.0
+
+
+def _update_min_dists_numpy(min_dists, X_sub, best_idx):
+    """Update min_dists after selecting best_idx (CPU)."""
+    new_dists = np.sqrt(((X_sub - X_sub[best_idx]) ** 2).sum(axis=1))
+    np.minimum(min_dists, new_dists, out=min_dists)
+    min_dists[best_idx] = -1.0
+
+
+def _finalize_state(min_dists, chosen, state, is_torch=False):
+    """Remove chosen indices from min_dists and cache in state."""
+    if is_torch:
+        import torch
+        mask = torch.ones(len(min_dists), dtype=torch.bool, device=min_dists.device)
+        mask[chosen] = False
+        state['min_dists'] = min_dists[mask]
+    else:
+        mask = np.ones(len(min_dists), dtype=bool)
+        mask[chosen] = False
+        state['min_dists'] = min_dists[mask]
+
+
+def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
+    import torch
+    device = torch.device('cuda')
+
+    X_sub = torch.tensor(X_pool, dtype=torch.float32, device=device)
+    n_pick = min(n, len(X_sub))
+    X_sub_sq_norms = (X_sub**2).sum(dim=1)
+
+    min_dists = _init_min_dists_torch(X_sub, X_sub_sq_norms, X_labeled, state, label="Wasserstein")
+
     chosen = []
-    # Vectorized Greedy Loop
     for _ in range(n_pick):
         if torch.isinf(min_dists[0]):
             best_idx = int(rng.choice(len(X_sub)))
         else:
             best_idx = torch.argmax(min_dists).item()
-            
-        chosen.append(best_idx)
-        
-        # Speedup: ||pool - new|| = sqrt(||pool||^2 + ||new||^2 - 2 * pool @ new)
-        # Using torch.mv (matrix-vector) is much faster than explicit subtraction on GPU
-        new_pt = X_sub[best_idx]
-        new_pt_sq_norm = X_sub_sq_norms[best_idx]
-        new_dists = (X_sub_sq_norms + new_pt_sq_norm - 2 * torch.mv(X_sub, new_pt)).clamp(min=0.0).sqrt()
-        
-        torch.minimum(min_dists, new_dists, out=min_dists)
-        min_dists[best_idx] = -1.0
 
-    mask = torch.ones(len(min_dists), dtype=torch.bool, device=device)
-    mask[chosen] = False
-    state['min_dists'] = min_dists[mask]
-    
+        chosen.append(best_idx)
+        _update_min_dists_torch(min_dists, X_sub, X_sub_sq_norms, best_idx)
+
+    _finalize_state(min_dists, chosen, state, is_torch=True)
     return np.array(chosen, dtype=np.intp)
 
 
@@ -250,22 +296,7 @@ def _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state):
     X_sub = X_pool
     n_pick = min(n, len(X_sub))
 
-    if 'min_dists' not in state:
-        min_dists = np.full(len(X_sub), np.inf, dtype=np.float32)
-        if X_labeled is not None and len(X_labeled) > 0:
-            print("  [CPU] Initializing global Wasserstein distances (this might take a while on CPU)...")
-            # Limit chunk size strictly to avoid RAM explosion
-            CHUNK_P, CHUNK_L = 20000, 5000
-            for start_p in range(0, len(X_sub), CHUNK_P):
-                end_p = min(start_p + CHUNK_P, len(X_sub))
-                X_p_chunk = X_sub[start_p:end_p]
-                for start_l in range(0, len(X_labeled), CHUNK_L):
-                    end_l = min(start_l + CHUNK_L, len(X_labeled))
-                    # Euclidean distance
-                    dists = cdist(X_p_chunk, X_labeled[start_l:end_l], metric="euclidean")
-                    np.minimum(min_dists[start_p:end_p], dists.min(axis=1), out=min_dists[start_p:end_p])
-    else:
-        min_dists = state['min_dists']
+    min_dists = _init_min_dists_numpy(X_sub, X_labeled, state, label="Wasserstein")
 
     chosen = []
     for _ in range(n_pick):
@@ -273,16 +304,107 @@ def _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state):
             best_idx = int(rng.choice(len(X_sub)))
         else:
             best_idx = int(np.argmax(min_dists))
-            
-        chosen.append(best_idx)
-        new_dists = np.sqrt(((X_sub - X_sub[best_idx]) ** 2).sum(axis=1))
-        np.minimum(min_dists, new_dists, out=min_dists)
-        min_dists[best_idx] = -1.0
 
-    mask = np.ones(len(min_dists), dtype=bool)
-    mask[chosen] = False
-    state['min_dists'] = min_dists[mask]
-    
+        chosen.append(best_idx)
+        _update_min_dists_numpy(min_dists, X_sub, best_idx)
+
+    _finalize_state(min_dists, chosen, state, is_torch=False)
+    return np.array(chosen, dtype=np.intp)
+
+
+# ── k-Median++ Sampling ──────────────────────────────────
+# Like Wasserstein/core-set but replaces greedy argmax with
+# probabilistic sampling ∝ min_dist (k-means++/k-median++ init).
+
+def query_kmedianpp(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
+    """
+    k-Median++ style sampling.
+
+    Same distance bookkeeping as the Wasserstein/core-set strategy, but
+    instead of deterministically picking argmax(min_dist), each new point
+    is sampled with probability proportional to its min distance to the
+    already-labeled set.  This is the classical D(x) sampling from
+    Arthur & Vassilvitskii (2007) generalised from k-means to the
+    active-learning core-set setting.
+
+    Advantages over greedy argmax:
+      • Introduces controlled randomness → less susceptible to outlier
+        attraction and boundary artifacts.
+      • Still biases selection toward under-represented regions.
+    """
+    if state is None:
+        state = {}
+
+    try:
+        import torch
+        has_torch = True
+    except ImportError:
+        has_torch = False
+
+    if has_torch and torch.cuda.is_available():
+        return _query_kmedianpp_torch(X_pool, n, rng, X_labeled, state)
+    else:
+        return _query_kmedianpp_numpy(X_pool, n, rng, X_labeled, state)
+
+
+def _query_kmedianpp_torch(X_pool, n, rng, X_labeled, state):
+    import torch
+    device = torch.device('cuda')
+
+    X_sub = torch.tensor(X_pool, dtype=torch.float32, device=device)
+    n_pick = min(n, len(X_sub))
+    X_sub_sq_norms = (X_sub**2).sum(dim=1)
+
+    min_dists = _init_min_dists_torch(X_sub, X_sub_sq_norms, X_labeled, state, label="k-Median++")
+
+    chosen = []
+    for _ in range(n_pick):
+        if torch.isinf(min_dists[0]):
+            best_idx = int(rng.choice(len(X_sub)))
+        else:
+            # D(x) sampling: probability ∝ min_dist
+            # Clamp negatives (already-chosen sentinels) to 0
+            weights = min_dists.clamp(min=0.0)
+            total = weights.sum().item()
+            if total <= 0:
+                # All distances are zero/negative — fall back to uniform
+                best_idx = int(rng.choice(len(X_sub)))
+            else:
+                probs = (weights / total).cpu().numpy()
+                best_idx = int(rng.choice(len(X_sub), p=probs))
+
+        chosen.append(best_idx)
+        _update_min_dists_torch(min_dists, X_sub, X_sub_sq_norms, best_idx)
+
+    _finalize_state(min_dists, chosen, state, is_torch=True)
+    return np.array(chosen, dtype=np.intp)
+
+
+def _query_kmedianpp_numpy(X_pool, n, rng, X_labeled, state):
+    """CPU fallback for k-Median++ sampling."""
+    X_sub = X_pool
+    n_pick = min(n, len(X_sub))
+
+    min_dists = _init_min_dists_numpy(X_sub, X_labeled, state, label="k-Median++")
+
+    chosen = []
+    for _ in range(n_pick):
+        if np.isinf(min_dists[0]):
+            best_idx = int(rng.choice(len(X_sub)))
+        else:
+            # D(x) sampling: probability ∝ min_dist
+            weights = np.maximum(min_dists, 0.0)
+            total = weights.sum()
+            if total <= 0:
+                best_idx = int(rng.choice(len(X_sub)))
+            else:
+                probs = weights / total
+                best_idx = int(rng.choice(len(X_sub), p=probs))
+
+        chosen.append(best_idx)
+        _update_min_dists_numpy(min_dists, X_sub, best_idx)
+
+    _finalize_state(min_dists, chosen, state, is_torch=False)
     return np.array(chosen, dtype=np.intp)
 
 
@@ -557,6 +679,7 @@ STRATEGIES = {
     "uncertainty": query_uncertainty,
     "margin": query_margin,
     "wasserstein": query_wasserstein,
+    "kmedianpp": query_kmedianpp,
     "purely_random": query_purely_random,
 }
 

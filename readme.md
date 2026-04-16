@@ -93,14 +93,15 @@ python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
-  --strategy        wasserstein_weighted \
-  --total-queries   50000 \
-  --eval-every      500 \
-  --lambda-MP       0.05 \
-  --C               100.0 \
-  --eval-size       200000 \
+  --strategy        purely_random \
+  --reweighting     none \
+  --total-queries   200000 \
+  --eval-every      5000 \
+  --lambda-MP       0.01 \
+  --C               10000.0 \
+  --eval-size       500000 \
   --seed            42 \
-  --out-dir         al_wasserstein_weighted
+  --out-dir         al_purely_random
 ```
 
 ```powershell
