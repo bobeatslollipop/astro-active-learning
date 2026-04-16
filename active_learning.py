@@ -124,6 +124,26 @@ def query_uncertainty(X_pool, clf, n, rng, **kw):
     return rng.choice(len(probs), n, replace=False, p=weights)
 
 
+def query_entropy(X_pool, clf, n, rng, **kw):
+    """Entropy sampling: sample proportional to Shannon entropy.
+
+    Treats the predicted probability's entropy H(p) = -p*log(p) - (1-p)*log(1-p)
+    as unnormalised sampling weights. The difference from 'uncertainty' is that
+    Entropy has fatter tails for high/low confident predictions.
+    """
+    probs = clf.predict_proba(X_pool)[:, 1]
+    n = min(n, len(probs))
+    
+    # Calculate binary entropy: -p log2(p) - (1-p) log2(1-p)
+    eps = 1e-15
+    p_clipped = np.clip(probs, eps, 1.0 - eps)
+    scores = -p_clipped * np.log2(p_clipped) - (1 - p_clipped) * np.log2(1 - p_clipped)
+    
+    scores += 1e-8  # ensure no zero weights
+    weights = scores / scores.sum()
+    return rng.choice(len(probs), n, replace=False, p=weights)
+
+
 def query_margin(X_pool, clf, n, rng, **kw):
     """KWIK-style: pick points with smallest |decision_function| (closest to boundary)."""
     dvals = np.abs(clf.decision_function(X_pool))
@@ -138,14 +158,36 @@ def query_purely_random(X_pool, clf, n, rng, **kw):
     return rng.choice(len(X_pool), min(n, len(X_pool)), replace=False)
 
 
-def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
+def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, pool_size=5000, **kw):
     """
-    Greedy core-set (Wasserstein approx).
-    Uses PyTorch (GPU) if available for instantaneous global search over millions of points.
-    Falls back to a batched numpy/scipy implementation if PyTorch is unavailable.
+    Approximate Wasserstein sampling via optimal coupling (skAI-style).
+
+    Randomly samples a subpool of ``pool_size`` points from X_pool to serve
+    as both the empirical target distribution and the candidate search set.
+    Then greedily selects n points from the subpool that minimise the
+    Weighted Wasserstein Distance:
+
+        WWD(S, T) = (1/|T|) * Σ_{t∈T} min_{s∈S} ||t − s||
+
+    where  S = labeled ∪ already-selected  and  T = subpool.
+    At each greedy step the candidate whose addition yields the lowest WWD
+    is chosen — equivalent to the skAI ``find_Set`` algorithm but restricted
+    to a random subpool for tractability.
+
+    Parameters
+    ----------
+    pool_size : int
+        Number of candidate points subsampled from X_pool.  Controls the
+        approximation quality vs. compute trade-off.  The brute-force
+        search is O(n × pool_size²), so keep this manageable (1 000–10 000).
     """
-    if state is None:
-        state = {}
+    n_pool = len(X_pool)
+    n_pick = min(n, n_pool)
+    effective_ps = min(pool_size, n_pool)
+
+    # Random subpool — serves as both target distribution and candidate set
+    subpool_idx = rng.choice(n_pool, effective_ps, replace=False)
+    T = X_pool[subpool_idx]  # (effective_ps, d)
 
     try:
         import torch
@@ -154,9 +196,11 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
         has_torch = False
 
     if has_torch and torch.cuda.is_available():
-        return _query_wasserstein_torch(X_pool, n, rng, X_labeled, state)
+        chosen = _wasserstein_coupling_torch(T, X_labeled, n_pick, rng)
     else:
-        return _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state)
+        chosen = _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng)
+
+    return subpool_idx[np.array(chosen, dtype=np.intp)]
 
 
 def _init_min_dists_torch(X_sub, X_sub_sq_norms, X_labeled, state, label="Wasserstein"):
@@ -267,61 +311,116 @@ def _finalize_state(min_dists, chosen, state, is_torch=False):
         state['min_dists'] = min_dists[mask]
 
 
-def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
+def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
+    """CPU brute-force Wasserstein coupling (skAI-style find_Set).
+
+    For each greedy step, evaluates WWD(S ∪ {u}, T) for every remaining
+    candidate u in T and picks the one that minimises it.  The key identity
+    used is:
+
+        WWD(S ∪ {u}, T) = (1/|T|) Σ_j min(base_min_j, d(u, t_j))
+
+    so after selecting u* we update  base_min_j ← min(base_min_j, d(u*, t_j)).
+    """
+    ps = len(T)
+
+    # Pairwise distances within the subpool: (ps, ps)
+    intra_dists = cdist(T, T, metric='euclidean').astype(np.float32)
+
+    # Base min distances: for each subpool point j, min ||t_j − s|| over labeled set S
+    base_min = np.full(ps, np.inf, dtype=np.float32)
+    if X_labeled is not None and len(X_labeled) > 0:
+        CHUNK = 5000
+        for start in range(0, len(X_labeled), CHUNK):
+            end = min(start + CHUNK, len(X_labeled))
+            dists = cdist(T, X_labeled[start:end], metric='euclidean').astype(np.float32)
+            np.minimum(base_min, dists.min(axis=1), out=base_min)
+            del dists
+
+    print(f"  [CPU] Wasserstein coupling: pool_size={ps}, selecting {n_pick}")
+
+    chosen = []
+    available = np.ones(ps, dtype=bool)
+
+    for k in range(n_pick):
+        # WWD_i = (1/ps) Σ_j min(base_min[j], intra_dists[i, j])
+        candidate_min = np.minimum(base_min[np.newaxis, :], intra_dists)  # (ps, ps)
+        wwds = candidate_min.mean(axis=1)  # (ps,)
+        wwds[~available] = np.inf
+
+        best = int(np.argmin(wwds))
+        chosen.append(best)
+        available[best] = False
+
+        # Update: the selected point is now part of the source set
+        np.minimum(base_min, intra_dists[best], out=base_min)
+
+    return chosen
+
+
+def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
+    """GPU brute-force Wasserstein coupling (skAI-style find_Set)."""
     import torch
     device = torch.device('cuda')
+    ps = len(T)
 
-    X_sub = torch.tensor(X_pool, dtype=torch.float32, device=device)
-    n_pick = min(n, len(X_sub))
-    X_sub_sq_norms = (X_sub**2).sum(dim=1)
+    T_t = torch.tensor(T, dtype=torch.float32, device=device)
+    T_sq = (T_t ** 2).sum(dim=1)
 
-    min_dists = _init_min_dists_torch(X_sub, X_sub_sq_norms, X_labeled, state, label="Wasserstein")
+    # Pairwise distances within subpool
+    intra_dists = T_sq.unsqueeze(1) + T_sq.unsqueeze(0)
+    intra_dists.addmm_(T_t, T_t.T, beta=1.0, alpha=-2.0)
+    intra_dists.clamp_(min=0.0).sqrt_()
+
+    # Base min distances to labeled set
+    base_min = torch.full((ps,), float('inf'), device=device)
+    if X_labeled is not None and len(X_labeled) > 0:
+        X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
+        X_l_sq = (X_l ** 2).sum(dim=1)
+        CHUNK = 10000
+        for start in range(0, len(X_l), CHUNK):
+            end = min(start + CHUNK, len(X_l))
+            dists = T_sq.unsqueeze(1) + X_l_sq[start:end].unsqueeze(0)
+            dists.addmm_(T_t, X_l[start:end].T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+            torch.minimum(base_min, dists.min(dim=1)[0], out=base_min)
+            del dists
+        del X_l, X_l_sq
+        torch.cuda.empty_cache()
+
+    print(f"  [GPU] Wasserstein coupling: pool_size={ps}, selecting {n_pick}")
 
     chosen = []
-    for _ in range(n_pick):
-        if torch.isinf(min_dists[0]):
-            best_idx = int(rng.choice(len(X_sub)))
-        else:
-            best_idx = torch.argmax(min_dists).item()
+    available = torch.ones(ps, dtype=torch.bool, device=device)
 
-        chosen.append(best_idx)
-        _update_min_dists_torch(min_dists, X_sub, X_sub_sq_norms, best_idx)
+    for k in range(n_pick):
+        candidate_min = torch.minimum(
+            base_min.unsqueeze(0).expand(ps, ps), intra_dists)
+        wwds = candidate_min.mean(dim=1)
+        wwds[~available] = float('inf')
 
-    _finalize_state(min_dists, chosen, state, is_torch=True)
-    return np.array(chosen, dtype=np.intp)
+        best = torch.argmin(wwds).item()
+        chosen.append(best)
+        available[best] = False
 
+        torch.minimum(base_min, intra_dists[best], out=base_min)
+        del candidate_min, wwds
 
-def _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state):
-    """Fallback numpy implementation that uses the same global logic but limits initial search chunking on CPU."""
-    X_sub = X_pool
-    n_pick = min(n, len(X_sub))
-
-    min_dists = _init_min_dists_numpy(X_sub, X_labeled, state, label="Wasserstein")
-
-    chosen = []
-    for _ in range(n_pick):
-        if np.isinf(min_dists[0]):
-            best_idx = int(rng.choice(len(X_sub)))
-        else:
-            best_idx = int(np.argmax(min_dists))
-
-        chosen.append(best_idx)
-        _update_min_dists_numpy(min_dists, X_sub, best_idx)
-
-    _finalize_state(min_dists, chosen, state, is_torch=False)
-    return np.array(chosen, dtype=np.intp)
+    del T_t, intra_dists
+    torch.cuda.empty_cache()
+    return chosen
 
 
 # ── k-Median++ Sampling ──────────────────────────────────
-# Like Wasserstein/core-set but replaces greedy argmax with
-# probabilistic sampling ∝ min_dist (k-means++/k-median++ init).
+# Core-set / farthest-first distance maintenance, but replaces
+# the greedy argmax with D(x) sampling ∝ min_dist (k-median++ init).
 
 def query_kmedianpp(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
     """
     k-Median++ style sampling.
 
-    Same distance bookkeeping as the Wasserstein/core-set strategy, but
-    instead of deterministically picking argmax(min_dist), each new point
+    Uses farthest-first / core-set distance bookkeeping, but instead
+    of deterministically picking argmax(min_dist), each new point
     is sampled with probability proportional to its min distance to the
     already-labeled set.  This is the classical D(x) sampling from
     Arthur & Vassilvitskii (2007) generalised from k-means to the
@@ -677,6 +776,7 @@ def _soft_voronoi_numpy(X_pool, X_labeled, temperature):
 STRATEGIES = {
     "random": query_random,
     "uncertainty": query_uncertainty,
+    "entropy": query_entropy,
     "margin": query_margin,
     "wasserstein": query_wasserstein,
     "kmedianpp": query_kmedianpp,
@@ -750,13 +850,25 @@ def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None
 
 
 def evaluate(clf, X, y):
-    """Return a flat dict of metrics."""
+    """Return a flat dict of metrics including per-class average log-loss."""
     yp = clf.predict(X)
     prec, rec, f1, _ = precision_recall_fscore_support(y, yp, labels=[0, 1], zero_division=0)
+
+    # Per-class average log-loss:  -mean[ y*log(p) + (1-y)*log(1-p) ] for each class
+    probs = clf.predict_proba(X)  # columns: [P(class=0), P(class=1)]
+    eps = 1e-15
+    # For each sample: log-loss = -[y==0]*log(P(0)) - [y==1]*log(P(1))
+    log_loss_per_sample = -np.log(np.clip(probs[np.arange(len(y)), y], eps, 1.0))
+    mp_mask = (y == 0)
+    mr_mask = (y == 1)
+    loss_MP = float(log_loss_per_sample[mp_mask].mean()) if mp_mask.any() else 0.0
+    loss_MR = float(log_loss_per_sample[mr_mask].mean()) if mr_mask.any() else 0.0
+
     return {
         "accuracy": float(accuracy_score(y, yp)),
         "precision_MP": float(prec[0]), "recall_MP": float(rec[0]), "f1_MP": float(f1[0]),
         "precision_MR": float(prec[1]), "recall_MR": float(rec[1]), "f1_MR": float(f1[1]),
+        "loss_MP": loss_MP, "loss_MR": loss_MR,
         "confusion_matrix": confusion_matrix(y, yp, labels=[0, 1]).tolist(),
     }
 
@@ -772,28 +884,32 @@ def _record(metrics, n_queries, y_labeled):
 
 def _log(m):
     """One-line summary of a metrics snapshot."""
+    train_mp = m.get('train_loss_MP', float('nan'))
+    train_mr = m.get('train_loss_MR', float('nan'))
     print(f"[Query {m['n_queries']:4d}] Acc={m['accuracy']:.4f}  "
-          f"MP(P={m['precision_MP']:.4f} R={m['recall_MP']:.4f})  "
-          f"MR(P={m['precision_MR']:.4f} R={m['recall_MR']:.4f})  "
+          f"Loss(test MP={m['loss_MP']:.4f} MR={m['loss_MR']:.4f} | "
+          f"train MP={train_mp:.4f} MR={train_mr:.4f})  "
           f"labeled={m['n_labeled']} (MP={m['n_labeled_MP']}, MR={m['n_labeled_MR']})")
 
 
 # ── Plotting ─────────────────────────────────────────────
 
 def _save_plots(results, out_dir):
-    """Generate learning-curve plots."""
+    """Generate learning-curve plots (per-class average log-loss)."""
     qs = [r["n_queries"] for r in results]
 
-    # --- Learning curve ---
+    # --- Loss learning curve ---
     fig, ax = plt.subplots(figsize=(10, 6))
     for key, label, color, marker in [
-        ("accuracy", "Accuracy", "#4A90D9", "o"),
-        ("recall_MP", "MP Recall", "#E07070", "s"),
-        ("precision_MP", "MP Precision", "#5A9E7A", "^"),
+        ("loss_MP",       "MP Loss (test)",  "#E07070", "o"),
+        ("loss_MR",       "MR Loss (test)",  "#4A90D9", "o"),
+        ("train_loss_MP", "MP Loss (train)", "#E07070", "^"),
+        ("train_loss_MR", "MR Loss (train)", "#4A90D9", "^"),
     ]:
-        ax.plot(qs, [r[key] for r in results], f"{marker}-", label=label, color=color, lw=2)
-    ax.set(xlabel="Number of Queries", ylabel="Score", ylim=(0, 1.05))
-    ax.set_title("Active Learning Curve", fontsize=14, fontweight="bold")
+        vals = [r.get(key, float('nan')) for r in results]
+        ax.plot(qs, vals, marker=marker, ls="-", label=label, color=color, lw=2, markersize=5)
+    ax.set(xlabel="Number of Queries", ylabel="Average Log-Loss")
+    ax.set_title("Per-Class Average Log-Loss", fontsize=14, fontweight="bold")
     ax.legend(fontsize=11); ax.grid(True, alpha=0.3)
     fig.tight_layout(); fig.savefig(os.path.join(out_dir, "learning_curve.png"), dpi=200); plt.close(fig)
 
@@ -837,28 +953,45 @@ def generate_confusion_matrix(clf, X_full, y_full, out_dir):
     print(f"Saved confusion matrix plot to {out_file}.")
 
 
-def generate_pr_curve(clf, X_full, y_full, out_dir):
+def generate_pr_curve(clf_list, X_full, y_full, out_dir):
+    """Plot one or more Precision-Recall curves on the same figure.
+
+    Parameters
+    ----------
+    clf_list : list of (label, clf) tuples
+        Each entry is a (human-readable label, trained classifier) pair.
+        E.g. [("Halfway (2500 queries)", clf_half), ("Final (5000 queries)", clf_final)].
+    """
     from sklearn.metrics import precision_recall_curve, auc
-    # predict_proba returns probability for class 0 (MP) in the 0th column
-    if hasattr(clf, "predict_proba"):
-        y_scores = clf.predict_proba(X_full)[:, 0]
-    else:
-        # fallback if no predict_proba, use negative decision function
-        y_scores = -clf.decision_function(X_full)
-        
+
+    colors = ['#E07070', '#4A90D9', '#5A9E7A', '#D4A24E', '#9B59B6']
     y_true_mp = (y_full == 0).astype(int)
-    
-    precision, recall, _ = precision_recall_curve(y_true_mp, y_scores)
-    pr_auc = auc(recall, precision)
-    
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(recall, precision, color='#4A90D9', lw=2, label=f'PR Curve (AUC = {pr_auc:.3f})')
+
+    for i, (label, clf) in enumerate(clf_list):
+        if hasattr(clf, "predict_proba"):
+            y_scores = clf.predict_proba(X_full)[:, 0]
+        else:
+            y_scores = -clf.decision_function(X_full)
+
+        precision, recall, _ = precision_recall_curve(y_true_mp, y_scores)
+        # Drop the sklearn sentinel point (recall=0, precision=1) at the end
+        precision, recall = precision[:-1], recall[:-1]
+        pr_auc = auc(recall, precision)
+
+        color = colors[i % len(colors)]
+        ax.plot(recall, precision, color=color, lw=2,
+                label=f'{label} (AUC = {pr_auc:.3f})')
+
     ax.set_xlabel('Recall (MP Class)', fontsize=12)
     ax.set_ylabel('Precision (MP Class)', fontsize=12)
     ax.set_title('Precision-Recall Curve for MP Class', fontsize=14, fontweight='bold')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
     ax.grid(True, alpha=0.3)
     ax.legend(loc='upper right', fontsize=11)
-    
+
     fig.tight_layout()
     out_file = os.path.join(out_dir, 'pr_curve_mp.png')
     fig.savefig(out_file, dpi=300)
@@ -955,6 +1088,12 @@ def run_active_learning(args):
         clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf,
                              sample_weight=sw)
         m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
+
+        # Training loss (per-class average log-loss on labeled set)
+        train_m = evaluate(clf, Xl, yl)
+        m["train_loss_MP"] = train_m["loss_MP"]
+        m["train_loss_MR"] = train_m["loss_MR"]
+
         results.append(m)
         _log(m)
         return clf
@@ -969,13 +1108,17 @@ def run_active_learning(args):
     # 6. Active learning loop
     queried = 0
     strategy_state = {}
+    halfway_point = args.total_queries // 2
+    clf_halfway = None  # will store a deep copy of the classifier at the halfway mark
+    halfway_queries = None
     
     while queried < args.total_queries and available.any():
         batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
         avail_idx = np.where(available)[0]
 
         sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
-                          X_labeled=X_labeled[:n_labeled], state=strategy_state)
+                          X_labeled=X_labeled[:n_labeled], state=strategy_state,
+                          pool_size=args.wass_pool_size)
         pool_idx = avail_idx[sel]
 
         # Append to pre-allocated arrays (no vstack/concatenate)
@@ -987,6 +1130,13 @@ def run_active_learning(args):
         queried += n_new
 
         clf = snapshot(queried, prev_clf=clf)
+
+        # Save a deep copy of the classifier at the halfway mark
+        if clf_halfway is None and queried >= halfway_point and clf is not None:
+            import copy
+            clf_halfway = copy.deepcopy(clf)
+            halfway_queries = queried
+            print(f"  >> Saved halfway checkpoint at {queried} queries")
 
     t_total = time.perf_counter() - t0
     print(f"\nTotal runtime: {t_total:.1f}s  (data loading: {t_load:.1f}s)")
@@ -1035,7 +1185,13 @@ def run_active_learning(args):
     X_full, y_full, _ = load_features_and_labels(
         args.full_data_file, args.feh_threshold, None, args.seed + 1)
     generate_confusion_matrix(clf, X_full, y_full, args.out_dir)
-    generate_pr_curve(clf, X_full, y_full, args.out_dir)
+
+    # Build list of (label, clf) pairs for multi-curve PR plot
+    pr_curves = []
+    if clf_halfway is not None:
+        pr_curves.append((f"Halfway ({halfway_queries} queries)", clf_halfway))
+    pr_curves.append((f"Final ({queried} queries)", clf))
+    generate_pr_curve(pr_curves, X_full, y_full, args.out_dir)
     
     print(f"\nAll outputs saved to {args.out_dir}/")
     return results
@@ -1069,6 +1225,7 @@ def main():
     a("--eval-size",       type=int, default=100_000, help="Eval subsample size.")
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
+    a("--wass-pool-size",  type=int, default=5000,    help="Subpool size for Wasserstein strategy. Brute-force search is O(n × pool_size²).")
     a("--seed",            type=int, default=42)
     a("--out-dir",         default=None, help="Output directory (default: al_{strategy}).")
 
