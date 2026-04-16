@@ -168,7 +168,7 @@ def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
     X_sub = torch.tensor(X_pool, dtype=torch.float32, device=device)
     n_pick = min(n, len(X_sub))
     
-    # Precompute squared norms: ||x-y||^2 = ||x||^2 + ||y||^2 - 2*x.y
+    # Precompute squared norms for GEMM-based distance: ||x-y|| = sqrt(||x||^2 + ||y||^2 - 2*x.y)
     X_sub_sq_norms = (X_sub**2).sum(dim=1)
 
     if 'min_dists' not in state:
@@ -202,10 +202,10 @@ def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
                     X_l_chunk = X_lab[start_l:end_l]
                     L_norms = X_lab_sq_norms[start_l:end_l].unsqueeze(0)
                     
-                    # Compute squared euclidean dists using in-place matmul (addmm) 
-                    # This avoids allocating multi-gigabyte intermediate tensors: dist = P^2 + L^2 - 2 * (P @ L.T)
+                    # Compute Euclidean dists via GEMM: ||p-l|| = sqrt(||p||^2 + ||l||^2 - 2*p.l)
                     dists = P_norms + L_norms
                     dists.addmm_(X_p_chunk, X_l_chunk.T, beta=1.0, alpha=-2.0)
+                    dists.clamp_(min=0.0).sqrt_()  # clamp for numerical safety, then L2
                     
                     torch.minimum(chunk_min, dists.min(dim=1)[0], out=chunk_min)
                     del dists # Free the large chunk immediately
@@ -229,11 +229,11 @@ def _query_wasserstein_torch(X_pool, n, rng, X_labeled, state):
             
         chosen.append(best_idx)
         
-        # Speedup: norm_pool + norm_new - 2 * (pool @ new_point)
+        # Speedup: ||pool - new|| = sqrt(||pool||^2 + ||new||^2 - 2 * pool @ new)
         # Using torch.mv (matrix-vector) is much faster than explicit subtraction on GPU
         new_pt = X_sub[best_idx]
         new_pt_sq_norm = X_sub_sq_norms[best_idx]
-        new_dists = X_sub_sq_norms + new_pt_sq_norm - 2 * torch.mv(X_sub, new_pt)
+        new_dists = (X_sub_sq_norms + new_pt_sq_norm - 2 * torch.mv(X_sub, new_pt)).clamp(min=0.0).sqrt()
         
         torch.minimum(min_dists, new_dists, out=min_dists)
         min_dists[best_idx] = -1.0
@@ -261,8 +261,8 @@ def _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state):
                 X_p_chunk = X_sub[start_p:end_p]
                 for start_l in range(0, len(X_labeled), CHUNK_L):
                     end_l = min(start_l + CHUNK_L, len(X_labeled))
-                    # sqeuclidean directly
-                    dists = cdist(X_p_chunk, X_labeled[start_l:end_l], metric="sqeuclidean")
+                    # Euclidean distance
+                    dists = cdist(X_p_chunk, X_labeled[start_l:end_l], metric="euclidean")
                     np.minimum(min_dists[start_p:end_p], dists.min(axis=1), out=min_dists[start_p:end_p])
     else:
         min_dists = state['min_dists']
@@ -275,7 +275,7 @@ def _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state):
             best_idx = int(np.argmax(min_dists))
             
         chosen.append(best_idx)
-        new_dists = ((X_sub - X_sub[best_idx]) ** 2).sum(axis=1)
+        new_dists = np.sqrt(((X_sub - X_sub[best_idx]) ** 2).sum(axis=1))
         np.minimum(min_dists, new_dists, out=min_dists)
         min_dists[best_idx] = -1.0
 
@@ -286,43 +286,232 @@ def _query_wasserstein_numpy(X_pool, n, rng, X_labeled, state):
     return np.array(chosen, dtype=np.intp)
 
 
+# ── Voronoi Reweighting (for wasserstein_weighted) ───────
+
+def compute_voronoi_weights(X_pool, X_labeled, voronoi_state=None):
+    """Compute optimal sample weights for labeled points that minimise
+    W_2(Uniform(pool), Weighted(labeled)).
+
+    Solution: assign each pool point to its nearest labeled point
+    (Voronoi partition).  Weight of labeled point i equals the fraction
+    of pool points assigned to it.
+
+    Supports **incremental updates**: pass a `voronoi_state` dict that
+    persists across calls.  On the first call the full assignment is
+    computed; on subsequent calls only distances to *newly added* labeled
+    points are evaluated and the cached assignments are patched in-place.
+    This reduces per-snapshot cost from O(pool × labeled) to
+    O(pool × n_new) — typically a ~100× speedup in steady state.
+
+    Returns (weights, voronoi_state) where weights has shape (n_labeled,)
+    scaled so that sum(weights) == n_labeled.
+    """
+    if voronoi_state is None:
+        voronoi_state = {}
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            w = _voronoi_weights_torch(X_pool, X_labeled, voronoi_state)
+            return w, voronoi_state
+    except ImportError:
+        pass
+    w = _voronoi_weights_numpy(X_pool, X_labeled, voronoi_state)
+    return w, voronoi_state
+
+
+def _voronoi_weights_torch(X_pool, X_labeled, state):
+    import torch
+    device = torch.device('cuda')
+
+    n_pool = len(X_pool)
+    n_labeled = len(X_labeled)
+
+    # --- Incremental path: only check newly added labeled points ---
+    prev_n = state.get('n_labeled', 0)
+    if prev_n > 0 and prev_n < n_labeled and 'nearest_idx' in state:
+        # Only compute distances to the NEW labeled points [prev_n : n_labeled]
+        X_new = torch.tensor(X_labeled[prev_n:], dtype=torch.float32, device=device)
+        X_new_sq = (X_new ** 2).sum(dim=1)         # (n_new,)
+        n_new = n_labeled - prev_n
+
+        nearest_idx = state['nearest_idx']         # (n_pool,) int64 on CPU
+        nearest_dist = state['nearest_dist']       # (n_pool,) float32 on CPU
+
+        try:
+            props = torch.cuda.get_device_properties(device)
+            free_vram = props.total_memory - torch.cuda.memory_allocated(device)
+            target_elements = int(free_vram * 0.4 / 4)
+            CHUNK_P = max(5000, target_elements // max(n_new, 1))
+        except:
+            CHUNK_P = 100000
+
+        X_p = torch.tensor(X_pool, dtype=torch.float32, device=device)
+
+        for start_p in range(0, n_pool, CHUNK_P):
+            end_p = min(start_p + CHUNK_P, n_pool)
+            chunk_p = X_p[start_p:end_p]
+            chunk_p_sq = (chunk_p ** 2).sum(dim=1)
+
+            # Full euclidean distance to new points: sqrt(||p||^2 + ||l||^2 - 2*p@l)
+            dists = chunk_p_sq.unsqueeze(1) + X_new_sq.unsqueeze(0)
+            dists.addmm_(chunk_p, X_new.T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+
+            chunk_min_dists, chunk_argmin = dists.min(dim=1)
+            # Shift indices to global labeled index space
+            chunk_argmin += prev_n
+
+            # Compare with cached nearest distances (on CPU, then update)
+            chunk_min_np = chunk_min_dists.cpu().numpy()
+            chunk_arg_np = chunk_argmin.cpu().numpy()
+            cached_slice = nearest_dist[start_p:end_p]
+
+            improved = chunk_min_np < cached_slice
+            nearest_dist[start_p:end_p][improved] = chunk_min_np[improved]
+            nearest_idx[start_p:end_p][improved] = chunk_arg_np[improved]
+
+            del dists, chunk_min_dists, chunk_argmin
+
+        del X_p, X_new
+        torch.cuda.empty_cache()
+
+        state['n_labeled'] = n_labeled
+        # state['nearest_idx'] and state['nearest_dist'] are updated in-place
+
+        counts = np.bincount(nearest_idx, minlength=n_labeled)
+        weights = counts.astype(np.float64) / counts.sum()
+        return weights * n_labeled
+
+    # --- Full computation (first call) ---
+    X_p = torch.tensor(X_pool, dtype=torch.float32, device=device)
+    X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
+    X_p_sq = (X_p ** 2).sum(dim=1)
+    X_l_sq = (X_l ** 2).sum(dim=1)
+
+    try:
+        props = torch.cuda.get_device_properties(device)
+        free_vram = props.total_memory - torch.cuda.memory_allocated(device)
+        target_elements = int(free_vram * 0.4 / 4)
+        CHUNK_P = max(5000, target_elements // max(n_labeled, 1))
+    except:
+        CHUNK_P = 50000
+
+    nearest_idx = np.empty(n_pool, dtype=np.int64)
+    nearest_dist = np.full(n_pool, np.inf, dtype=np.float32)
+
+    for start_p in range(0, n_pool, CHUNK_P):
+        end_p = min(start_p + CHUNK_P, n_pool)
+        chunk_p = X_p[start_p:end_p]
+
+        # Full euclidean dist for caching: sqrt(||p||^2 + ||l||^2 - 2*p@l)
+        dists = X_p_sq[start_p:end_p].unsqueeze(1) + X_l_sq.unsqueeze(0)
+        dists.addmm_(chunk_p, X_l.T, beta=1.0, alpha=-2.0)
+        dists.clamp_(min=0.0).sqrt_()
+
+        chunk_min_dists, chunk_argmin = dists.min(dim=1)
+        nearest_dist[start_p:end_p] = chunk_min_dists.cpu().numpy()
+        nearest_idx[start_p:end_p] = chunk_argmin.cpu().numpy()
+        del dists, chunk_min_dists, chunk_argmin
+
+    del X_p, X_l
+    torch.cuda.empty_cache()
+
+    # Cache for next incremental call
+    state['nearest_idx'] = nearest_idx
+    state['nearest_dist'] = nearest_dist
+    state['n_labeled'] = n_labeled
+
+    counts = np.bincount(nearest_idx, minlength=n_labeled)
+    weights = counts.astype(np.float64) / counts.sum()
+    return weights * n_labeled
+
+
+def _voronoi_weights_numpy(X_pool, X_labeled, state=None):
+    """CPU fallback for Voronoi weight computation (no incremental support)."""
+    n_pool = len(X_pool)
+    n_labeled = len(X_labeled)
+    counts = np.zeros(n_labeled, dtype=np.int64)
+
+    CHUNK_P, CHUNK_L = 20000, 5000
+    for start_p in range(0, n_pool, CHUNK_P):
+        end_p = min(start_p + CHUNK_P, n_pool)
+        best_dists = np.full(end_p - start_p, np.inf, dtype=np.float32)
+        best_indices = np.zeros(end_p - start_p, dtype=np.int64)
+
+        for start_l in range(0, n_labeled, CHUNK_L):
+            end_l = min(start_l + CHUNK_L, n_labeled)
+            dists = cdist(X_pool[start_p:end_p], X_labeled[start_l:end_l],
+                          metric="euclidean").astype(np.float32)
+            chunk_min = dists.min(axis=1)
+            chunk_argmin = dists.argmin(axis=1) + start_l
+            improved = chunk_min < best_dists
+            best_dists[improved] = chunk_min[improved]
+            best_indices[improved] = chunk_argmin[improved]
+
+        np.add.at(counts, best_indices, 1)
+
+    weights = counts.astype(np.float64) / counts.sum()
+    weights = weights * n_labeled
+    return weights
+
+
 STRATEGIES = {
     "random": query_random,
     "uncertainty": query_uncertainty,
     "margin": query_margin,
     "wasserstein": query_wasserstein,
+    "wasserstein_weighted": query_wasserstein,  # same query; different training
     "purely_random": query_purely_random,
 }
 
 
 # ── Training & Evaluation ────────────────────────────────
 
-def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None):
-    """Train logistic regression with dynamic class reweighting.
+def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None):
+    """Train logistic regression with guaranteed class weight totals.
 
-    lambda_MP specifies the desired *total* weight ratio:
-        (n_MP * w_per_MP) / (n_MR * w_per_MR) = lambda_MP
-    Per-sample weights are derived as:
-        w_per_MP = lambda_MP * n_MR / n_MP,   w_per_MR = 1.0
+    Regardless of the per-sample weights provided (e.g. Voronoi weights),
+    the final training weights are rescaled so that:
+        sum of weights on MP (class 0) == lambda_MP
+        sum of weights on MR (class 1) == 1.0
+
+    Within each class, the relative weights from sample_weight are preserved
+    (i.e. the Voronoi density correction is respected), but the class-level
+    totals are locked to the lambda_MP ratio.
 
     If prev_clf is given, its coefficients are used to warm-start LBFGS
     so that convergence takes only a few iterations.
     """
     n_MP, n_MR = int(np.sum(y == 0)), int(np.sum(y == 1))
-    if n_MP == 0 or n_MR == 0:
-        w_MP, w_MR = 1.0, 1.0
+
+    # Start from per-sample base weights
+    if sample_weight is not None:
+        sw = np.array(sample_weight, dtype=np.float64)
     else:
-        w_MP = lambda_MP * n_MR / n_MP
-        w_MR = 1.0
-    clf = LogisticRegression(C=C, class_weight={0: w_MP, 1: w_MR},
-                             solver="lbfgs", max_iter=2000,
+        sw = np.ones(len(y), dtype=np.float64)
+
+    # Rescale each class so totals are exactly lambda_MP (MP) and 1.0 (MR)
+    final_w = np.empty_like(sw)
+    mp_mask = (y == 0)
+    mr_mask = (y == 1)
+
+    if n_MP > 0:
+        sum_mp = sw[mp_mask].sum()
+        final_w[mp_mask] = sw[mp_mask] * (lambda_MP / sum_mp) if sum_mp > 0 else lambda_MP / n_MP
+
+    if n_MR > 0:
+        sum_mr = sw[mr_mask].sum()
+        final_w[mr_mask] = sw[mr_mask] * (1.0 / sum_mr) if sum_mr > 0 else 1.0 / n_MR
+
+    clf = LogisticRegression(C=C, solver="lbfgs", max_iter=2000,
                              warm_start=True)
     # Seed from previous solution so LBFGS starts near the optimum
     if prev_clf is not None:
         clf.coef_ = prev_clf.coef_.copy()
         clf.intercept_ = prev_clf.intercept_.copy()
         clf.classes_ = prev_clf.classes_.copy()
-    clf.fit(X, y)
+    clf.fit(X, y, sample_weight=final_w)
     return clf
 
 
@@ -447,13 +636,24 @@ def run_active_learning(args):
     results = []
 
     # Helper: train → evaluate → record → log
+    voronoi_state = {}  # persisted across snapshots for incremental Voronoi updates
+
     def snapshot(n_queries, prev_clf=None):
+        nonlocal voronoi_state
         Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
         if len(np.unique(yl)) < 2:
             # Both classes required; skip this checkpoint and keep previous clf.
             print(f"[Query {n_queries:4d}] Skipped — only one class in labeled set so far.")
             return prev_clf
-        clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf)
+
+        # Voronoi reweighting for wasserstein_weighted strategy
+        sw = None
+        if args.strategy == "wasserstein_weighted":
+            print(f"  [Voronoi] Computing optimal sample weights ({n_labeled} labeled vs {len(X_pool)} pool)...")
+            sw, voronoi_state = compute_voronoi_weights(X_pool, Xl, voronoi_state)
+
+        clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf,
+                             sample_weight=sw)
         m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
         results.append(m)
         _log(m)
