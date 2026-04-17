@@ -1,0 +1,18 @@
+{
+  "warm_start_file": "bp_rp_lamost_normalized_low_teff.h5",
+  "full_data_file": "bp_rp_lamost_normalized.h5",
+  "feh_threshold": -2.0,
+  "strategy": "wasserstein",
+  "total_queries": 15000,
+  "eval_every": 500,
+  "lambda_MP": 0.01,
+  "C": 10000.0,
+  "reweighting": "hard",
+  "temperature": 1.0,
+  "eval_size": 500000,
+  "warm_start_max": null,
+  "pool_max": null,
+  "wass_pool_size": 50000,
+  "seed": 42,
+  "out_dir": "al_wasserstein_hard_15k"
+}

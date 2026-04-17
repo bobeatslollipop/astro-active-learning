@@ -16,3 +16,9 @@
 !/al_kmedianpp_3k/
 !/al_kmedianpp_reweighted_3k/
 !/al_wasserstein_hard_3k/
+!/al_purely_random_15k/
+!/al_random_15k/
+!/al_uncertainty_15k/
+!/al_wasserstein_hard_15k/
+!/al_random_hard_15k/
+!/al_uncertainty_hard_15k/
