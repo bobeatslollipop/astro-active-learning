@@ -1086,6 +1086,41 @@ def _save_auc_trials_plot(auc_query_points, all_trial_aucs, out_dir, n_trials):
     print(f"Saved AUC trials plot to {out_file}")
 
 
+def _save_mp_trials_plot(auc_query_points, all_trial_mp_counts, out_dir, n_trials):
+    """Plot queried MP fraction across trials with confidence region (mean ± std)."""
+    max_len = max(len(t) for t in all_trial_mp_counts)
+    padded = [t + [float('nan')] * (max_len - len(t)) for t in all_trial_mp_counts]
+    counts = np.array(padded, dtype=float)  # (n_trials, n_snapshots)
+
+    # Convert cumulative MP counts to fractions: mp_count / total_queries
+    queries_arr = np.array(auc_query_points[:max_len], dtype=float)
+    fractions = counts / queries_arr[np.newaxis, :]
+
+    mean_frac = np.nanmean(fractions, axis=0)
+    std_frac  = np.nanstd(fractions, axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(auc_query_points, mean_frac, 'o-', color='#E07070', lw=2, markersize=6,
+            label='Mean MP Fraction')
+    ax.fill_between(auc_query_points, mean_frac - std_frac, mean_frac + std_frac,
+                    alpha=0.25, color='#E07070', label='±1 std')
+
+    # Overlay individual trial lines faintly
+    for t in range(n_trials):
+        ax.plot(auc_query_points, fractions[t], '-', color='#999999', alpha=0.3, lw=0.8)
+
+    ax.set_xlabel('Number of Queries', fontsize=12)
+    ax.set_ylabel('MP Fraction in Queried Samples', fontsize=12)
+    ax.set_title(f'Queried MP Fraction across {n_trials} Trials', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_file = os.path.join(out_dir, 'mp_fraction_trials.png')
+    fig.savefig(out_file, dpi=200)
+    plt.close(fig)
+    print(f"Saved MP fraction trials plot to {out_file}")
+
+
 def generate_confusion_matrix(clf, X_full, y_full, out_dir):
     from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay, precision_recall_fscore_support
     from matplotlib.colors import LogNorm
@@ -1236,6 +1271,7 @@ def run_active_learning(args):
 
     # ── Multi-trial loop ──
     all_trial_aucs = []          # list of lists, each inner list has n_snapshots AUC values
+    all_trial_mp_counts = []     # list of lists, cumulative MP counts at each snapshot
     first_trial_results = None
 
     for trial in range(args.n_trials):
@@ -1254,6 +1290,7 @@ def run_active_learning(args):
             X_labeled[:n_labeled] = X_warm
             y_labeled[:n_labeled] = y_warm
 
+        warm_n = n_labeled  # 0 for purely_random, len(X_warm) otherwise
         available = np.ones(len(X_pool), dtype=bool)
         results = []
         strategy_state = {}
@@ -1261,6 +1298,7 @@ def run_active_learning(args):
         soft_voronoi_state = {}
         final_sw = None
         trial_aucs = []
+        trial_mp_counts = []
         clf_snapshots = []       # (queries, clf) pairs for PR curve — first trial only
 
         # Helper: train → evaluate → record → log
@@ -1341,7 +1379,12 @@ def run_active_learning(args):
                     print(f"  >> AUC snapshot at {queried} queries: skipped (clf not ready)")
                 trial_aucs.append(auc_val)
 
+                # Track cumulative MP count among queried samples
+                n_queried_mp = int(np.sum(y_labeled[warm_n:n_labeled] == 0))
+                trial_mp_counts.append(n_queried_mp)
+
         all_trial_aucs.append(trial_aucs)
+        all_trial_mp_counts.append(trial_mp_counts)
 
         # 7. Save detailed outputs (first trial only)
         if trial == 0:
@@ -1400,11 +1443,13 @@ def run_active_learning(args):
         auc_data = {
             "auc_query_points": auc_query_points,
             "trial_aucs": all_trial_aucs,
+            "trial_mp_counts": all_trial_mp_counts,
         }
         with open(os.path.join(args.out_dir, "auc_trials.json"), "w") as f:
             json.dump(auc_data, f, indent=2)
 
         _save_auc_trials_plot(auc_query_points, all_trial_aucs, args.out_dir, args.n_trials)
+        _save_mp_trials_plot(auc_query_points, all_trial_mp_counts, args.out_dir, args.n_trials)
 
     print(f"\nAll outputs saved to {args.out_dir}/")
     return first_trial_results
