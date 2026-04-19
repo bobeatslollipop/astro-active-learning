@@ -93,16 +93,70 @@ python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
-  --strategy        purely_random \
-  --reweighting     none \
-  --total-queries   15000 \
-  --eval-every      500 \
+  --strategy        random \
+  --reweighting     soft \
+  --soft-topk       50 \
+  --total-queries   6000 \
+  --eval-every      200 \
   --lambda-MP       0.01 \
   --wass-pool-size  50000 \
   --C               10000.0 \
   --eval-size       500000 \
   --seed            42 \
-  --out-dir         al_purely_random_15k
+  --n-trials        16 \
+  --n-snapshots     10 \
+  --out-dir         al_random_soft_6k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        uncertainty \
+  --reweighting     soft \
+  --soft-topk       50 \
+  --total-queries   6000 \
+  --eval-every      200 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --n-trials        16 \
+  --n-snapshots     10 \
+  --out-dir         al_uncertainty_soft_6k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        wasserstein \
+  --reweighting     soft \
+  --soft-topk       50 \
+  --total-queries   6000 \
+  --eval-every      200 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --n-trials        16 \
+  --n-snapshots     10 \
+  --out-dir         al_wasserstein_soft_6k && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        kmedianpp \
+  --reweighting     soft \
+  --soft-topk       50 \
+  --total-queries   6000 \
+  --eval-every      200 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --n-trials        16 \
+  --n-snapshots     10 \
+  --out-dir         al_kmedianpp_soft_6k
 ```
 
 ```powershell
@@ -148,3 +202,45 @@ Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `l
 | `uncertainty` | Pick points with predicted probability closest to 0.5. |
 | `margin` | Pick points with smallest \|decision function\| (closest to boundary). |
 | `wasserstein` | Greedy core-set: maximise coverage of the full population. |
+
+## Comparing AUC across Experiments
+
+`compare_auc_trials.py` reads the `auc_trials.json` files produced by `active_learning.py` (the raw data behind each `auc_trials.png`) and overlays the PR-AUC learning curves from multiple experiments on one figure. Each curve shows the **mean ± 1σ** band across all trials.
+
+```bash
+# Auto-discover all experiment subdirectories that contain auc_trials.json
+python compare_auc_trials.py --base-dir experiment_results/
+
+
+# Compare a specific subset, with custom legend labels and output file
+python compare_auc_trials.py \
+  al_random_6k al_uncertainty_6k al_kmedianpp_6k al_wasserstein_hard_6k \
+  --labels "Random" "Uncertainty" "K-Median++" "Wasserstein (hard)" \
+  --out comparison_6k.png
+
+# Also overlay the individual trial lines (lighter, thinner)
+python compare_auc_trials.py \
+  al_random_6k al_uncertainty_6k \
+  --labels "Random" "Uncertainty" \
+  --show-trials \
+  --out comparison_with_trials.png
+
+# Custom figure size and title
+python compare_auc_trials.py \
+  al_random_6k al_uncertainty_6k al_kmedianpp_6k \
+  --figsize 14 7 \
+  --title "6 000-Query Active Learning: PR-AUC Comparison" \
+  --out comparison_6k_wide.png
+```
+
+### Arguments
+
+| Argument | Default | Description |
+| :--- | :--- | :--- |
+| `dirs` | *(auto)* | Positional list of experiment directories. Auto-discovers all subdirs with `auc_trials.json` if omitted. |
+| `--labels` / `-l` | *(from dir name)* | Legend labels (must match the number of directories). |
+| `--out` / `-o` | `auc_comparison.png` | Output image path. |
+| `--show-trials` | off | Overlay individual trial lines on top of the mean curve. |
+| `--figsize W H` | `12 7` | Figure width and height in inches. |
+| `--title` | *(default string)* | Plot title. |
+| `--base-dir` | `.` | Root directory for auto-discovery mode. |

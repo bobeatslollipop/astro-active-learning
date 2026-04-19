@@ -10,9 +10,10 @@ Workflow:
      and evaluate on a random subsample of the full population.
 
 Usage:
-  python active_learning.py --strategy random --total-queries 500 --eval-every 50
-  python active_learning.py --strategy uncertainty --total-queries 500 --eval-every 50
-  python active_learning.py --strategy wasserstein --total-queries 200 --eval-every 20
+  python active_learning.py --strategy random --total-queries 3000 --eval-every 200
+  python active_learning.py --strategy uncertainty --total-queries 3000 --eval-every 200
+  python active_learning.py --strategy wasserstein --total-queries 3000 --eval-every 200
+  python active_learning.py --strategy uncertainty --n-trials 5 --n-snapshots 3
 """
 
 import argparse
@@ -698,7 +699,61 @@ def _voronoi_weights_numpy(X_pool, X_labeled, state=None):
 
 # ── Soft Voronoi Reweighting (temperature softmin) ───────
 
-def compute_soft_voronoi_weights(X_pool, X_labeled, temperature=1.0):
+def _auto_topk(X_pool, X_labeled, temperature, device, coverage=0.999, n_probe=500):
+    """Determine minimum K so that top-K softmax covers ≥ coverage of full softmax.
+
+    Probes a random subset of pool points, computes the full softmax,
+    then sorts the softmax values (descending) and finds cumulative coverage.
+    Tensors are freed eagerly to minimise peak GPU memory.
+    Cost: O(n_probe × n_labeled) — negligible compared to the main loop.
+    """
+    import torch
+    rng = np.random.RandomState(0)
+    n_labeled = len(X_labeled)
+    n_probe = min(n_probe, len(X_pool))
+    probe_idx = rng.choice(len(X_pool), n_probe, replace=False)
+
+    X_p = torch.tensor(X_pool[probe_idx], dtype=torch.float32, device=device)
+    X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
+
+    # Distance matrix (n_probe × n_labeled)
+    X_p_sq = (X_p ** 2).sum(dim=1)
+    X_l_sq = (X_l ** 2).sum(dim=1)
+    dists = X_p_sq.unsqueeze(1) + X_l_sq.unsqueeze(0)
+    dists.addmm_(X_p, X_l.T, beta=1.0, alpha=-2.0)
+    dists.clamp_(min=0.0).sqrt_()
+    del X_p, X_l, X_p_sq, X_l_sq          # free source tensors early
+
+    # Softmax (in-place neg + div reuses the dists buffer for logits)
+    dists.neg_().div_(temperature)
+    soft_sm = torch.softmax(dists, dim=1)  # (n_probe, n_labeled)
+    del dists
+
+    # Sort softmax values descending — largest contributor first.
+    # This is equivalent to sorting by distance ascending then gathering,
+    # but avoids allocating the int64 index tensor.
+    sorted_sm, _ = soft_sm.sort(dim=1, descending=True)
+    del soft_sm
+    cumsum = sorted_sm.cumsum(dim=1)
+    del sorted_sm
+
+    # For each probe, find minimum K where cumulative coverage >= target
+    sufficient = (cumsum >= coverage)
+    k_per_probe = sufficient.int().argmax(dim=1) + 1  # (n_probe,)
+    del cumsum, sufficient
+
+    # Use 95th percentile as K, clamped to [10, n_labeled]
+    k95 = int(torch.quantile(k_per_probe.float(), 0.95).item())
+    k95 = max(k95, 10)
+    k95 = min(k95, n_labeled)
+
+    del k_per_probe
+    torch.cuda.empty_cache()
+    return k95
+
+
+def compute_soft_voronoi_weights(X_pool, X_labeled, temperature=1.0,
+                                  soft_state=None, topk=0):
     """Compute soft Voronoi weights via temperature-scaled softmin.
 
     For each pool point p_i, a soft assignment over labeled points is:
@@ -709,24 +764,52 @@ def compute_soft_voronoi_weights(X_pool, X_labeled, temperature=1.0):
     τ → 0  converges to hard Voronoi (argmin).
     τ → ∞  converges to uniform weights.
 
+    When topk > 0, only the K nearest labeled points contribute to each
+    pool point's softmax, reducing cost from O(pool×labeled) to O(pool×K).
+    When topk == 0, K is auto-calibrated per snapshot for >= 99.9% coverage.
+
     Returns weights array of shape (n_labeled,), scaled so that
     sum(weights) == n_labeled.
     """
+    if soft_state is None:
+        soft_state = {}
     try:
         import torch
         if torch.cuda.is_available():
-            return _soft_voronoi_torch(X_pool, X_labeled, temperature)
+            return _soft_voronoi_torch(X_pool, X_labeled, temperature,
+                                       state=soft_state, topk=topk)
     except ImportError:
         pass
-    return _soft_voronoi_numpy(X_pool, X_labeled, temperature)
+    return _soft_voronoi_numpy(X_pool, X_labeled, temperature, topk=topk)
 
 
-def _soft_voronoi_torch(X_pool, X_labeled, temperature):
+def _soft_voronoi_torch(X_pool, X_labeled, temperature, state=None, topk=0):
     import torch
     device = torch.device('cuda')
 
     n_pool = len(X_pool)
     n_labeled = len(X_labeled)
+
+    # ── Determine effective K for top-K truncated softmax ──
+    # Called BEFORE loading full tensors to minimise peak GPU memory.
+    if topk <= 0:
+        if n_labeled <= 50:
+            K = n_labeled
+        else:
+            try:
+                K = _auto_topk(X_pool, X_labeled, temperature, device)
+                print(f"    [Auto top-K] K={K} / {n_labeled} labeled "
+                      f"(>= 99.9% softmax coverage)")
+            except RuntimeError:  # CUDA OOM during calibration
+                K = min(50, n_labeled)
+                print(f"    [Auto top-K] OOM during calibration, falling back to K={K}")
+                torch.cuda.empty_cache()
+    else:
+        K = min(topk, n_labeled)
+        if K < n_labeled:
+            print(f"    [Top-K] Using user-specified K={K} / {n_labeled} labeled")
+
+    use_topk = K < n_labeled
 
     X_p = torch.tensor(X_pool, dtype=torch.float32, device=device)
     X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
@@ -755,13 +838,27 @@ def _soft_voronoi_torch(X_pool, X_labeled, temperature):
         dists.addmm_(chunk_p, X_l.T, beta=1.0, alpha=-2.0)
         dists.clamp_(min=0.0).sqrt_()
 
-        # Softmin: softmax(-dist / τ) along labeled dimension
-        # torch.softmax handles numerical stability (log-sum-exp) internally
-        logits = dists.neg_().div_(temperature)       # -dist / τ, in-place
-        soft_assign = torch.softmax(logits, dim=1)    # (CHUNK_P, n_labeled)
+        if use_topk:
+            # Keep only K nearest labeled points per pool point
+            topk_dists, topk_idx = dists.topk(K, dim=1, largest=False)
+            del dists  # free the large (chunk, n_labeled) matrix immediately
 
-        weight_accum += soft_assign.sum(dim=0).to(torch.float64)
-        del dists, logits, soft_assign
+            logits = topk_dists.neg_().div_(temperature)
+            soft_assign = torch.softmax(logits, dim=1)  # (chunk, K)
+
+            # Scatter-add contributions to the corresponding labeled indices
+            flat_idx = topk_idx.reshape(-1).long()
+            flat_vals = soft_assign.reshape(-1).to(torch.float64)
+            weight_accum.scatter_add_(0, flat_idx, flat_vals)
+
+            del topk_dists, topk_idx, logits, soft_assign
+        else:
+            # Full softmax (K == n_labeled or n_labeled is small)
+            logits = dists.neg_().div_(temperature)       # -dist / τ, in-place
+            soft_assign = torch.softmax(logits, dim=1)    # (CHUNK_P, n_labeled)
+
+            weight_accum += soft_assign.sum(dim=0).to(torch.float64)
+            del dists, logits, soft_assign
 
     weights = weight_accum / n_pool
     weights = (weights * n_labeled).cpu().numpy().astype(np.float64)
@@ -771,22 +868,36 @@ def _soft_voronoi_torch(X_pool, X_labeled, temperature):
     return weights
 
 
-def _soft_voronoi_numpy(X_pool, X_labeled, temperature):
+def _soft_voronoi_numpy(X_pool, X_labeled, temperature, topk=0):
     """CPU fallback for soft Voronoi weight computation."""
     n_pool = len(X_pool)
     n_labeled = len(X_labeled)
     weight_accum = np.zeros(n_labeled, dtype=np.float64)
 
+    K = min(topk, n_labeled) if topk > 0 else n_labeled
+    use_topk = K < n_labeled
+
     CHUNK_P = 10000
     for start_p in range(0, n_pool, CHUNK_P):
         end_p = min(start_p + CHUNK_P, n_pool)
         dists = cdist(X_pool[start_p:end_p], X_labeled, metric='euclidean')
-        logits = -dists / temperature
-        # Numerically stable softmax
-        logits -= logits.max(axis=1, keepdims=True)
-        exp_l = np.exp(logits)
-        soft_assign = exp_l / exp_l.sum(axis=1, keepdims=True)
-        weight_accum += soft_assign.sum(axis=0)
+
+        if use_topk:
+            # Partial sort: O(n_labeled) per row instead of O(n_labeled log n_labeled)
+            idx = np.argpartition(dists, K, axis=1)[:, :K]
+            topk_dists = np.take_along_axis(dists, idx, axis=1)
+            logits = -topk_dists / temperature
+            logits -= logits.max(axis=1, keepdims=True)
+            exp_l = np.exp(logits)
+            soft_assign = exp_l / exp_l.sum(axis=1, keepdims=True)
+            np.add.at(weight_accum, idx.ravel(), soft_assign.ravel())
+        else:
+            logits = -dists / temperature
+            # Numerically stable softmax
+            logits -= logits.max(axis=1, keepdims=True)
+            exp_l = np.exp(logits)
+            soft_assign = exp_l / exp_l.sum(axis=1, keepdims=True)
+            weight_accum += soft_assign.sum(axis=0)
 
     weights = weight_accum / n_pool
     weights = weights * n_labeled
@@ -934,6 +1045,47 @@ def _save_plots(results, out_dir):
     fig.tight_layout(); fig.savefig(os.path.join(out_dir, "learning_curve.png"), dpi=200); plt.close(fig)
 
 
+def compute_pr_auc(clf, X_eval, y_eval):
+    """Compute Precision-Recall AUC for the MP class."""
+    from sklearn.metrics import precision_recall_curve, auc
+    y_true_mp = (y_eval == 0).astype(int)
+    y_scores = clf.predict_proba(X_eval)[:, 0]
+    precision, recall, _ = precision_recall_curve(y_true_mp, y_scores)
+    precision, recall = precision[:-1], recall[:-1]
+    return auc(recall, precision)
+
+
+def _save_auc_trials_plot(auc_query_points, all_trial_aucs, out_dir, n_trials):
+    """Plot PR-AUC across trials with confidence region (mean ± std)."""
+    # Pad any short trial lists with NaN (e.g. if clf was None at a snapshot)
+    max_len = max(len(t) for t in all_trial_aucs)
+    padded = [t + [float('nan')] * (max_len - len(t)) for t in all_trial_aucs]
+    aucs = np.array(padded, dtype=float)  # (n_trials, n_snapshots)
+    mean_auc = np.nanmean(aucs, axis=0)
+    std_auc  = np.nanstd(aucs, axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(auc_query_points, mean_auc, 'o-', color='#4A90D9', lw=2, markersize=6,
+            label='Mean PR-AUC')
+    ax.fill_between(auc_query_points, mean_auc - std_auc, mean_auc + std_auc,
+                    alpha=0.25, color='#4A90D9', label='±1 std')
+
+    # Overlay individual trial lines faintly
+    for t in range(n_trials):
+        ax.plot(auc_query_points, aucs[t], '-', color='#999999', alpha=0.3, lw=0.8)
+
+    ax.set_xlabel('Number of Queries', fontsize=12)
+    ax.set_ylabel('PR-AUC (MP Class)', fontsize=12)
+    ax.set_title(f'PR-AUC across {n_trials} Trials', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_file = os.path.join(out_dir, 'auc_trials.png')
+    fig.savefig(out_file, dpi=200)
+    plt.close(fig)
+    print(f"Saved AUC trials plot to {out_file}")
+
+
 def generate_confusion_matrix(clf, X_full, y_full, out_dir):
     from sklearn.metrics import confusion_matrix, accuracy_score, ConfusionMatrixDisplay, precision_recall_fscore_support
     from matplotlib.colors import LogNorm
@@ -1022,12 +1174,23 @@ def generate_pr_curve(clf_list, X_full, y_full, out_dir):
 # ── Main Loop ────────────────────────────────────────────
 
 def run_active_learning(args):
-    rng = np.random.RandomState(args.seed)
-    os.makedirs(args.out_dir, exist_ok=True)
+    # ── Validate n_snapshots constraint ──
+    if args.total_queries % (args.n_snapshots * args.eval_every) != 0:
+        raise ValueError(
+            f"total_queries ({args.total_queries}) must be divisible by "
+            f"n_snapshots × eval_every ({args.n_snapshots} × {args.eval_every} = "
+            f"{args.n_snapshots * args.eval_every}).  "
+            f"Adjust parameters so that AUC snapshot points align with eval boundaries."
+        )
 
+    snap_interval = args.total_queries // args.n_snapshots
+    auc_query_points = [snap_interval * (i + 1) for i in range(args.n_snapshots)]
+    auc_query_set = set(auc_query_points)
+
+    os.makedirs(args.out_dir, exist_ok=True)
     t0 = time.perf_counter()
 
-    # 1. Load data
+    # 1. Load data (shared across all trials)
     print(f"Loading warm-start data from {args.warm_start_file} ...")
     X_warm, y_warm, sid_warm = load_features_and_labels(
         args.warm_start_file, args.feh_threshold, args.warm_start_max, args.seed)
@@ -1052,9 +1215,10 @@ def run_active_learning(args):
     # Free the full arrays (only pool & eval are needed hereafter)
     del X_full, y_full, sid_full, sid_warm
 
-    # 3. Evaluation set
+    # 3. Evaluation set (fixed across all trials)
+    eval_rng = np.random.RandomState(args.seed)
     eval_n = min(args.eval_size, len(X_pool))
-    eval_idx = rng.choice(len(X_pool), eval_n, replace=False)
+    eval_idx = eval_rng.choice(len(X_pool), eval_n, replace=False)
     X_eval, y_eval = X_pool[eval_idx], y_pool[eval_idx]
 
     for tag, n, mp in [("Warm-start", len(X_warm), (y_warm == 0).sum()),
@@ -1062,165 +1226,188 @@ def run_active_learning(args):
                        ("Eval set", eval_n, (y_eval == 0).sum())]:
         print(f"  {tag}: {n} (MP={mp}, MR={n - mp})")
 
-    # 4. Initialise — pre-allocate labeled arrays to avoid repeated vstack
+    # 4. Pre-allocate labeled arrays (reused across trials)
     max_labeled = len(X_warm) + args.total_queries
     n_features = X_warm.shape[1]
     X_labeled = np.empty((max_labeled, n_features), dtype=np.float32)
     y_labeled = np.empty(max_labeled, dtype=np.int32)
-    if args.strategy == "purely_random":
-        # Start from an empty labeled set — ignore the biased warm-start data.
-        n_labeled = 0
-        del X_warm, y_warm
-    else:
-        n_labeled = len(X_warm)
-        X_labeled[:n_labeled] = X_warm
-        y_labeled[:n_labeled] = y_warm
-        del X_warm, y_warm  # free
 
-    available = np.ones(len(X_pool), dtype=bool)
     strategy_fn = STRATEGIES[args.strategy]
-    results = []
 
-    # Helper: train → evaluate → record → log
-    voronoi_state = {}  # persisted across snapshots for incremental Voronoi updates
-    final_sw = None
+    # ── Multi-trial loop ──
+    all_trial_aucs = []          # list of lists, each inner list has n_snapshots AUC values
+    first_trial_results = None
 
-    def snapshot(n_queries, prev_clf=None):
-        nonlocal voronoi_state, final_sw
-        Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
-        if len(np.unique(yl)) < 2:
-            # Both classes required; skip this checkpoint and keep previous clf.
-            print(f"[Query {n_queries:4d}] Skipped — only one class in labeled set so far.")
-            return prev_clf
+    for trial in range(args.n_trials):
+        if args.n_trials > 1:
+            print(f"\n{'=' * 60}")
+            print(f"Trial {trial + 1} / {args.n_trials}  (seed={args.seed + trial})")
+            print(f"{'=' * 60}")
 
-        # Reweighting: compute per-sample weights to correct covariate shift
-        sw = None
-        if args.reweighting == "hard":
-            print(f"  [Voronoi-Hard] Computing sample weights ({n_labeled} labeled vs {len(X_pool)} pool)...")
-            sw, voronoi_state = compute_voronoi_weights(X_pool, Xl, voronoi_state)
-        elif args.reweighting == "soft":
-            print(f"  [Voronoi-Soft] Computing sample weights (τ={args.temperature}, "
-                  f"{n_labeled} labeled vs {len(X_pool)} pool)...")
-            sw = compute_soft_voronoi_weights(X_pool, Xl, args.temperature)
+        rng = np.random.RandomState(args.seed + trial)
 
-        final_sw = sw
-
-        clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf,
-                             sample_weight=sw)
-        m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
-
-        # Training loss (per-class average log-loss on labeled set)
-        train_m = evaluate(clf, Xl, yl)
-        m["train_loss_MP"] = train_m["loss_MP"]
-        m["train_loss_MR"] = train_m["loss_MR"]
-
-        results.append(m)
-        _log(m)
-        return clf
-
-    # 5. Initial evaluation
-    # For purely_random the labeled set starts empty, so skip the initial fit.
-    if args.strategy != "purely_random":
-        clf = snapshot(0)
-    else:
-        clf = None
-
-    # 6. Active learning loop
-    queried = 0
-    strategy_state = {}
-    third_point = args.total_queries // 3
-    two_third_point = 2 * args.total_queries // 3
-    clf_one_third = None
-    clf_two_third = None
-    queries_one_third = None
-    queries_two_third = None
-    
-    while queried < args.total_queries and available.any():
-        batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
-        avail_idx = np.where(available)[0]
-
-        sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
-                          X_labeled=X_labeled[:n_labeled], state=strategy_state,
-                          pool_size=args.wass_pool_size)
-        pool_idx = avail_idx[sel]
-
-        # Append to pre-allocated arrays (no vstack/concatenate)
-        n_new = len(pool_idx)
-        X_labeled[n_labeled:n_labeled + n_new] = X_pool[pool_idx]
-        y_labeled[n_labeled:n_labeled + n_new] = y_pool[pool_idx]
-        n_labeled += n_new
-        available[pool_idx] = False
-        queried += n_new
-
-        clf = snapshot(queried, prev_clf=clf)
-
-        # Save deep copies at 1/3 and 2/3 marks for PR curve
-        if clf_one_third is None and queried >= third_point and clf is not None:
-            import copy
-            clf_one_third = copy.deepcopy(clf)
-            queries_one_third = queried
-            print(f"  >> Saved 1/3 checkpoint at {queried} queries")
-
-        if clf_two_third is None and queried >= two_third_point and clf is not None:
-            import copy
-            clf_two_third = copy.deepcopy(clf)
-            queries_two_third = queried
-            print(f"  >> Saved 2/3 checkpoint at {queried} queries")
-
-    t_total = time.perf_counter() - t0
-    print(f"\nTotal runtime: {t_total:.1f}s  (data loading: {t_load:.1f}s)")
-
-    # 7. Save outputs
-    with open(os.path.join(args.out_dir, "results.json"), "w") as f:
-        json.dump(results, f, indent=2)
-
-    # Final weights
-    cols = _feature_cols(list(h5py.File(args.full_data_file, "r").keys()))
-    w, b = clf.coef_.flatten(), clf.intercept_[0]
-    with open(os.path.join(args.out_dir, "final_weights.csv"), "w") as f:
-        f.write("feature,weight\n" + f"BIAS,{b}\n")
-        f.writelines(f"{name},{wv}\n" for name, wv in zip(cols, w))
-
-    with open(os.path.join(args.out_dir, "params.json"), "w") as f:
-        json.dump(vars(args), f, indent=2)
-
-    _save_plots(results, args.out_dir)
-
-    if args.reweighting != "none" and final_sw is not None:
-        fig, ax = plt.subplots(figsize=(8, 5))
-        sw_pos = final_sw[final_sw > 0]
-        if len(sw_pos) > 0:
-            min_w, max_w = np.min(sw_pos), np.max(sw_pos)
-            if min_w < max_w:
-                bins = np.logspace(np.log10(min_w), np.log10(max_w), 50)
-            else:
-                bins = 50
-            ax.hist(sw_pos, bins=bins, color="#4A90D9", edgecolor="white", alpha=0.8, log=True)
-            ax.set_xscale("log")
+        # Reset labeled set for this trial
+        if args.strategy == "purely_random":
+            n_labeled = 0
         else:
-            ax.hist(final_sw, bins=50, color="#4A90D9", edgecolor="white", alpha=0.8, log=True)
-            
-        ax.set_xlabel("Sample Weight (log scale)", fontsize=12)
-        ax.set_ylabel("Frequency (log scale)", fontsize=12)
-        ax.set_title("Distribution of Sample Weights (Last Iteration)", fontsize=14, fontweight="bold")
-        ax.grid(True, alpha=0.3, which="both", ls="--")
-        fig.tight_layout()
-        wt_plot_path = os.path.join(args.out_dir, "weight_distribution.png")
-        fig.savefig(wt_plot_path, dpi=200)
-        plt.close(fig)
-        print(f"\nSaved weight distribution plot to {wt_plot_path}")
-    
-    # Build list of (label, clf) pairs for multi-curve PR plot (using eval set)
-    pr_curves = []
-    if clf_one_third is not None:
-        pr_curves.append((f"1/3 ({queries_one_third} queries)", clf_one_third))
-    if clf_two_third is not None:
-        pr_curves.append((f"2/3 ({queries_two_third} queries)", clf_two_third))
-    pr_curves.append((f"Final ({queried} queries)", clf))
-    generate_pr_curve(pr_curves, X_eval, y_eval, args.out_dir)
-    
+            n_labeled = len(X_warm)
+            X_labeled[:n_labeled] = X_warm
+            y_labeled[:n_labeled] = y_warm
+
+        available = np.ones(len(X_pool), dtype=bool)
+        results = []
+        strategy_state = {}
+        voronoi_state = {}
+        soft_voronoi_state = {}
+        final_sw = None
+        trial_aucs = []
+        clf_snapshots = []       # (queries, clf) pairs for PR curve — first trial only
+
+        # Helper: train → evaluate → record → log
+        def snapshot(n_queries, prev_clf=None):
+            nonlocal voronoi_state, final_sw
+            Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
+            if len(np.unique(yl)) < 2:
+                # Both classes required; skip this checkpoint and keep previous clf.
+                print(f"[Query {n_queries:4d}] Skipped — only one class in labeled set so far.")
+                return prev_clf
+
+            # Reweighting: compute per-sample weights to correct covariate shift
+            sw = None
+            if args.reweighting == "hard":
+                print(f"  [Voronoi-Hard] Computing sample weights ({n_labeled} labeled vs {len(X_pool)} pool)...")
+                sw, voronoi_state = compute_voronoi_weights(X_pool, Xl, voronoi_state)
+            elif args.reweighting == "soft":
+                print(f"  [Voronoi-Soft] Computing sample weights (τ={args.temperature}, "
+                      f"{n_labeled} labeled vs {len(X_pool)} pool)...")
+                sw = compute_soft_voronoi_weights(X_pool, Xl, args.temperature,
+                                                   soft_state=soft_voronoi_state,
+                                                   topk=args.soft_topk)
+
+            final_sw = sw
+
+            clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf,
+                                 sample_weight=sw)
+            m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
+
+            # Training loss (per-class average log-loss on labeled set)
+            train_m = evaluate(clf, Xl, yl)
+            m["train_loss_MP"] = train_m["loss_MP"]
+            m["train_loss_MR"] = train_m["loss_MR"]
+
+            results.append(m)
+            _log(m)
+            return clf
+
+        # 5. Initial evaluation
+        # For purely_random the labeled set starts empty, so skip the initial fit.
+        if args.strategy != "purely_random":
+            clf = snapshot(0)
+        else:
+            clf = None
+
+        # 6. Active learning loop
+        queried = 0
+
+        while queried < args.total_queries and available.any():
+            batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
+            avail_idx = np.where(available)[0]
+
+            sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
+                              X_labeled=X_labeled[:n_labeled], state=strategy_state,
+                              pool_size=args.wass_pool_size)
+            pool_idx = avail_idx[sel]
+
+            # Append to pre-allocated arrays (no vstack/concatenate)
+            n_new = len(pool_idx)
+            X_labeled[n_labeled:n_labeled + n_new] = X_pool[pool_idx]
+            y_labeled[n_labeled:n_labeled + n_new] = y_pool[pool_idx]
+            n_labeled += n_new
+            available[pool_idx] = False
+            queried += n_new
+
+            clf = snapshot(queried, prev_clf=clf)
+
+            # Record AUC at snapshot query points
+            if queried in auc_query_set:
+                if clf is not None:
+                    auc_val = compute_pr_auc(clf, X_eval, y_eval)
+                    print(f"  >> AUC snapshot at {queried} queries: PR-AUC = {auc_val:.4f}")
+                    if trial == 0:
+                        import copy
+                        clf_snapshots.append((queried, copy.deepcopy(clf)))
+                else:
+                    auc_val = float('nan')
+                    print(f"  >> AUC snapshot at {queried} queries: skipped (clf not ready)")
+                trial_aucs.append(auc_val)
+
+        all_trial_aucs.append(trial_aucs)
+
+        # 7. Save detailed outputs (first trial only)
+        if trial == 0:
+            first_trial_results = results
+            t_trial = time.perf_counter() - t0
+            print(f"\nTrial 1 runtime: {t_trial:.1f}s  (data loading: {t_load:.1f}s)")
+
+            with open(os.path.join(args.out_dir, "results.json"), "w") as f:
+                json.dump(results, f, indent=2)
+
+            # Final weights
+            cols = _feature_cols(list(h5py.File(args.full_data_file, "r").keys()))
+            w, b = clf.coef_.flatten(), clf.intercept_[0]
+            with open(os.path.join(args.out_dir, "final_weights.csv"), "w") as f:
+                f.write("feature,weight\n" + f"BIAS,{b}\n")
+                f.writelines(f"{name},{wv}\n" for name, wv in zip(cols, w))
+
+            with open(os.path.join(args.out_dir, "params.json"), "w") as f:
+                json.dump(vars(args), f, indent=2)
+
+            _save_plots(results, args.out_dir)
+
+            if args.reweighting != "none" and final_sw is not None:
+                fig, ax = plt.subplots(figsize=(8, 5))
+                sw_pos = final_sw[final_sw > 0]
+                if len(sw_pos) > 0:
+                    min_w, max_w = np.min(sw_pos), np.max(sw_pos)
+                    if min_w < max_w:
+                        bins = np.logspace(np.log10(min_w), np.log10(max_w), 50)
+                    else:
+                        bins = 50
+                    ax.hist(sw_pos, bins=bins, color="#4A90D9", edgecolor="white", alpha=0.8, log=True)
+                    ax.set_xscale("log")
+                else:
+                    ax.hist(final_sw, bins=50, color="#4A90D9", edgecolor="white", alpha=0.8, log=True)
+
+                ax.set_xlabel("Sample Weight (log scale)", fontsize=12)
+                ax.set_ylabel("Frequency (log scale)", fontsize=12)
+                ax.set_title("Distribution of Sample Weights (Last Iteration)", fontsize=14, fontweight="bold")
+                ax.grid(True, alpha=0.3, which="both", ls="--")
+                fig.tight_layout()
+                wt_plot_path = os.path.join(args.out_dir, "weight_distribution.png")
+                fig.savefig(wt_plot_path, dpi=200)
+                plt.close(fig)
+                print(f"\nSaved weight distribution plot to {wt_plot_path}")
+
+            # PR curve from snapshot classifiers
+            pr_curves = [(f"{q} queries", c) for q, c in clf_snapshots]
+            generate_pr_curve(pr_curves, X_eval, y_eval, args.out_dir)
+
+    # 8. Summary & multi-trial AUC plot
+    t_total = time.perf_counter() - t0
+    print(f"\nTotal runtime ({args.n_trials} trial(s)): {t_total:.1f}s")
+
+    if args.n_trials > 1:
+        auc_data = {
+            "auc_query_points": auc_query_points,
+            "trial_aucs": all_trial_aucs,
+        }
+        with open(os.path.join(args.out_dir, "auc_trials.json"), "w") as f:
+            json.dump(auc_data, f, indent=2)
+
+        _save_auc_trials_plot(auc_query_points, all_trial_aucs, args.out_dir, args.n_trials)
+
     print(f"\nAll outputs saved to {args.out_dir}/")
-    return results
+    return first_trial_results
 
 
 # ── CLI ──────────────────────────────────────────────────
@@ -1236,8 +1423,8 @@ def main():
 
     # Strategy
     a("--strategy",       default="uncertainty", choices=list(STRATEGIES.keys()), help="Query strategy.")
-    a("--total-queries",  type=int, default=500,  help="Total points to query.")
-    a("--eval-every",     type=int, default=50,   help="Retrain & evaluate every k queries.")
+    a("--total-queries",  type=int, default=3000, help="Total points to query.")
+    a("--eval-every",     type=int, default=200,  help="Retrain & evaluate every k queries.")
 
     # Model
     a("--lambda-MP", type=float, default=1.0, help="Desired total-weight ratio MP/MR. Per-sample weights are auto-scaled so n_MP*w_MP / n_MR*w_MR = lambda_MP.")
@@ -1246,12 +1433,16 @@ def main():
        help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
+    a("--soft-topk", type=int, default=0,
+       help="Top-K for soft reweighting. 0=auto (calibrate K per snapshot). Only used when --reweighting=soft.")
 
     # Practical
     a("--eval-size",       type=int, default=100_000, help="Eval subsample size.")
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
     a("--wass-pool-size",  type=int, default=5000,    help="Subpool size for Wasserstein strategy. Brute-force search is O(n × pool_size²).")
+    a("--n-trials",        type=int, default=1,       help="Number of independent trials.  When > 1, a mean±std PR-AUC plot is generated.")
+    a("--n-snapshots",     type=int, default=3,       help="Number of evenly-spaced AUC measurement points.  total_queries must be divisible by n_snapshots × eval_every (default: 3×200=600 divides 3000).")
     a("--seed",            type=int, default=42)
     a("--out-dir",         default=None, help="Output directory (default: al_{strategy}).")
 
