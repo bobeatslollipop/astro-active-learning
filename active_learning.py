@@ -159,7 +159,7 @@ def query_purely_random(X_pool, clf, n, rng, **kw):
     return rng.choice(len(X_pool), min(n, len(X_pool)), replace=False)
 
 
-def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, pool_size=5000, **kw):
+def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, pool_size=50000, **kw):
     """
     Approximate Wasserstein sampling via optimal coupling (skAI-style).
 
@@ -1531,7 +1531,7 @@ def main():
     a("--eval-size",       type=int, default=100_000, help="Eval subsample size.")
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
-    a("--wass-pool-size",  type=int, default=5000,    help="Subpool size for Wasserstein strategy. Brute-force search is O(n × pool_size²).")
+    a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein strategy. Brute-force search is O(n × pool_size²).")
     a("--n-trials",        type=int, default=1,       help="Number of independent trials.  When > 1, a mean±std PR-AUC plot is generated.")
     a("--n-snapshots",     type=int, default=3,       help="Number of evenly-spaced AUC measurement points.  total_queries must be divisible by n_snapshots × eval_every (default: 3×200=600 divides 3000).")
     a("--seed",            type=int, default=42)
