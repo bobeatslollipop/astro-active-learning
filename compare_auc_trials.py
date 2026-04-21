@@ -121,19 +121,17 @@ def load_experiment(directory: Path) -> dict | None:
         "has_mp_data":  False,
     }
 
-    # --- MP fraction (optional field, absent in older JSON files) ---
+    # --- MP count (optional field, absent in older JSON files) ---
     trial_mp_counts = data.get("trial_mp_counts", [])
     if trial_mp_counts:
         mp_padded = np.array(
             [t + [float("nan")] * (max_len - len(t)) for t in trial_mp_counts],
             dtype=float,
         )
-        queries_arr = np.array(query_points, dtype=float)
-        mp_fractions = mp_padded / queries_arr[np.newaxis, :]
         result["has_mp_data"]    = True
-        result["mp_fractions"]   = mp_fractions
-        result["mean_mp_frac"]   = np.nanmean(mp_fractions, axis=0)
-        result["std_mp_frac"]    = np.nanstd(mp_fractions, axis=0)
+        result["mp_counts"]      = mp_padded
+        result["mean_mp_count"]  = np.nanmean(mp_padded, axis=0)
+        result["std_mp_count"]   = np.nanstd(mp_padded, axis=0)
 
     return result
 
@@ -221,19 +219,19 @@ def plot_comparison(
     print(f"\n✓ Comparison plot saved to: {out_path}")
 
 
-def plot_mp_comparison(
+def plot_mp_count_comparison(
     experiments: list[dict],
     labels: list[str],
     out_path: Path,
     show_trials: bool = False,
     figsize: tuple[float, float] = (12, 7),
-    title: str = "Queried MP Fraction Comparison",
+    title: str = "Queried MP Count Comparison",
 ) -> None:
-    """Plot MP fraction curves for all experiments that have MP data."""
+    """Plot MP count curves for all experiments that have MP data."""
 
     has_any = any(exp.get("has_mp_data") for exp in experiments)
     if not has_any:
-        print("  [Info] No MP fraction data found in any experiment — skipping MP plot.")
+        print("  [Info] No MP data found in any experiment — skipping MP plot.")
         return
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -243,8 +241,8 @@ def plot_mp_comparison(
             continue
         color = PALETTE[i % len(PALETTE)]
         qp    = exp["query_points"]
-        mean  = exp["mean_mp_frac"]
-        std   = exp["std_mp_frac"]
+        mean  = exp["mean_mp_count"]
+        std   = exp["std_mp_count"]
         n     = exp["n_trials"]
 
         ax.plot(
@@ -254,30 +252,30 @@ def plot_mp_comparison(
         ax.fill_between(qp, mean - std, mean + std, alpha=0.18, color=color)
 
         if show_trials:
-            for trial_row in exp["mp_fractions"]:
+            for trial_row in exp["mp_counts"]:
                 ax.plot(qp, trial_row, "-", color=color, alpha=0.20, lw=0.8, zorder=1)
 
     ax.set_xlabel("Number of Queries", fontsize=13)
-    ax.set_ylabel("MP Fraction in Queried Samples", fontsize=13)
+    ax.set_ylabel("Number of MP Samples in Queries", fontsize=13)
     ax.set_title(title, fontsize=15, fontweight="bold", pad=12)
     ax.legend(fontsize=11, framealpha=0.85, loc="best")
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.tick_params(labelsize=11)
 
     # Print summary
-    print(f"\n{'Experiment':<35} {'n_trials':>8} {'Final MP Frac':>13} {'Std':>8}")
+    print(f"\n{'Experiment':<35} {'n_trials':>8} {'Final MP Count':>14} {'Std':>8}")
     print("-" * 68)
     for label, exp in zip(labels, experiments):
         if exp.get("has_mp_data"):
             print(
                 f"{label:<35} {exp['n_trials']:>8} "
-                f"{exp['mean_mp_frac'][-1]:>13.4f} {exp['std_mp_frac'][-1]:>8.4f}"
+                f"{exp['mean_mp_count'][-1]:>14.2f} {exp['std_mp_count'][-1]:>8.2f}"
             )
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
-    print(f"\n✓ MP fraction plot saved to: {out_path}")
+    print(f"\n✓ MP count plot saved to: {out_path}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -393,11 +391,11 @@ def main() -> None:
         title=args.title,
     )
 
-    # 5. Plot MP fraction comparison (auto-generated alongside AUC plot)
+    # 5. Plot MP count comparison (auto-generated alongside AUC plot)
     mp_out = out_path.with_name(
-        out_path.stem + "_mp_fraction" + out_path.suffix
+        out_path.stem + "_mp_count" + out_path.suffix
     )
-    plot_mp_comparison(
+    plot_mp_count_comparison(
         experiments=experiments,
         labels=labels,
         out_path=mp_out,

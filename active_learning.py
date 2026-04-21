@@ -1014,35 +1014,13 @@ def _record(metrics, n_queries, y_labeled):
 
 def _log(m):
     """One-line summary of a metrics snapshot."""
-    train_mp = m.get('train_loss_MP', float('nan'))
-    train_mr = m.get('train_loss_MR', float('nan'))
     print(f"[Query {m['n_queries']:4d}] Acc={m['accuracy']:.4f}  "
-          f"Loss(test MP={m['loss_MP']:.4f} MR={m['loss_MR']:.4f} | "
-          f"train MP={train_mp:.4f} MR={train_mr:.4f})  "
+          f"Loss(test MP={m['loss_MP']:.4f} MR={m['loss_MR']:.4f} "
+          f"avg={m['avg_test_loss']:.4f})  "
           f"labeled={m['n_labeled']} (MP={m['n_labeled_MP']}, MR={m['n_labeled_MR']})")
 
 
 # ── Plotting ─────────────────────────────────────────────
-
-def _save_plots(results, out_dir):
-    """Generate learning-curve plots (per-class average log-loss)."""
-    qs = [r["n_queries"] for r in results]
-
-    # --- Loss learning curve ---
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for key, label, color, marker in [
-        ("loss_MP",       "MP Loss (test)",  "#E07070", "o"),
-        ("loss_MR",       "MR Loss (test)",  "#4A90D9", "o"),
-        ("train_loss_MP", "MP Loss (train)", "#E07070", "^"),
-        ("train_loss_MR", "MR Loss (train)", "#4A90D9", "^"),
-    ]:
-        vals = [r.get(key, float('nan')) for r in results]
-        ax.plot(qs, vals, marker=marker, ls="-", label=label, color=color, lw=2, markersize=5)
-    ax.set(xlabel="Number of Queries", ylabel="Average Log-Loss")
-    ax.set_yscale("log")
-    ax.set_title("Per-Class Average Log-Loss", fontsize=14, fontweight="bold")
-    ax.legend(fontsize=11); ax.grid(True, alpha=0.3)
-    fig.tight_layout(); fig.savefig(os.path.join(out_dir, "learning_curve.png"), dpi=200); plt.close(fig)
 
 
 def compute_pr_auc(clf, X_eval, y_eval):
@@ -1084,6 +1062,59 @@ def _save_auc_trials_plot(auc_query_points, all_trial_aucs, out_dir, n_trials):
     fig.savefig(out_file, dpi=200)
     plt.close(fig)
     print(f"Saved AUC trials plot to {out_file}")
+
+
+def _save_test_loss_trials_plot(eval_query_points, all_trial_test_losses, out_dir, n_trials):
+    """Plot per-class test loss across trials with mean ± std (log-scale y-axis).
+
+    Generates two plots: test_loss_MP_trials.png and test_loss_MR_trials.png.
+    Each plot shows the average test loss evolution over training with variance bands.
+    """
+    max_len = max(len(t) for t in all_trial_test_losses)
+    # Each element in all_trial_test_losses is a list of dicts
+    # with keys "loss_MP", "loss_MR", "avg_test_loss"
+
+    for class_key, class_label, color, filename in [
+        ("loss_MP", "MP", "#E07070", "test_loss_MP_trials.png"),
+        ("loss_MR", "MR", "#4A90D9", "test_loss_MR_trials.png"),
+    ]:
+        # Extract per-trial loss arrays
+        trial_losses = []
+        for trial_data in all_trial_test_losses:
+            losses = [d[class_key] for d in trial_data]
+            # Pad with NaN if needed
+            losses += [float('nan')] * (max_len - len(losses))
+            trial_losses.append(losses)
+
+        arr = np.array(trial_losses, dtype=float)  # (n_trials, n_evals)
+        mean_loss = np.nanmean(arr, axis=0)
+        std_loss  = np.nanstd(arr, axis=0)
+
+        # Trim eval_query_points to match
+        qp = eval_query_points[:max_len]
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(qp, mean_loss, 'o-', color=color, lw=2, markersize=5,
+                label=f'Mean Test Loss ({class_label})')
+        ax.fill_between(qp, mean_loss - std_loss, mean_loss + std_loss,
+                        alpha=0.25, color=color, label='±1 std')
+
+        # Overlay individual trial lines faintly
+        for t in range(n_trials):
+            ax.plot(qp, arr[t], '-', color='#999999', alpha=0.3, lw=0.8)
+
+        ax.set_xlabel('Number of Queries', fontsize=12)
+        ax.set_ylabel(f'Test Log-Loss ({class_label})', fontsize=12)
+        ax.set_yscale('log')
+        ax.set_title(f'{class_label} Test Loss across {n_trials} Trials',
+                     fontsize=14, fontweight='bold')
+        ax.legend(fontsize=11)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        out_file = os.path.join(out_dir, filename)
+        fig.savefig(out_file, dpi=200)
+        plt.close(fig)
+        print(f"Saved {class_label} test loss trials plot to {out_file}")
 
 
 def _save_mp_trials_plot(auc_query_points, all_trial_mp_counts, out_dir, n_trials):
@@ -1272,6 +1303,7 @@ def run_active_learning(args):
     # ── Multi-trial loop ──
     all_trial_aucs = []          # list of lists, each inner list has n_snapshots AUC values
     all_trial_mp_counts = []     # list of lists, cumulative MP counts at each snapshot
+    all_trial_test_losses = []   # list of lists of dicts, test losses at each eval point
     first_trial_results = None
 
     for trial in range(args.n_trials):
@@ -1299,6 +1331,7 @@ def run_active_learning(args):
         final_sw = None
         trial_aucs = []
         trial_mp_counts = []
+        trial_test_losses = []   # test losses at each eval point for this trial
         clf_snapshots = []       # (queries, clf) pairs for PR curve — first trial only
 
         # Helper: train → evaluate → record → log
@@ -1328,10 +1361,16 @@ def run_active_learning(args):
                                  sample_weight=sw)
             m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
 
-            # Training loss (per-class average log-loss on labeled set)
-            train_m = evaluate(clf, Xl, yl)
-            m["train_loss_MP"] = train_m["loss_MP"]
-            m["train_loss_MR"] = train_m["loss_MR"]
+            # Average test loss across both classes
+            m["avg_test_loss"] = (m["loss_MP"] + m["loss_MR"]) / 2.0
+
+            # Track test losses for cross-trial plotting
+            trial_test_losses.append({
+                "loss_MP": m["loss_MP"],
+                "loss_MR": m["loss_MR"],
+                "avg_test_loss": m["avg_test_loss"],
+                "n_queries": n_queries,
+            })
 
             results.append(m)
             _log(m)
@@ -1385,6 +1424,7 @@ def run_active_learning(args):
 
         all_trial_aucs.append(trial_aucs)
         all_trial_mp_counts.append(trial_mp_counts)
+        all_trial_test_losses.append(trial_test_losses)
 
         # 7. Save detailed outputs (first trial only)
         if trial == 0:
@@ -1405,7 +1445,7 @@ def run_active_learning(args):
             with open(os.path.join(args.out_dir, "params.json"), "w") as f:
                 json.dump(vars(args), f, indent=2)
 
-            _save_plots(results, args.out_dir)
+
 
             if args.reweighting != "none" and final_sw is not None:
                 fig, ax = plt.subplots(figsize=(8, 5))
@@ -1440,16 +1480,22 @@ def run_active_learning(args):
     print(f"\nTotal runtime ({args.n_trials} trial(s)): {t_total:.1f}s")
 
     if args.n_trials > 1:
+        # Derive eval query points from the first trial's test loss records
+        eval_query_points = [d["n_queries"] for d in all_trial_test_losses[0]]
+
         auc_data = {
             "auc_query_points": auc_query_points,
             "trial_aucs": all_trial_aucs,
             "trial_mp_counts": all_trial_mp_counts,
+            "eval_query_points": eval_query_points,
+            "trial_test_losses": all_trial_test_losses,
         }
         with open(os.path.join(args.out_dir, "auc_trials.json"), "w") as f:
             json.dump(auc_data, f, indent=2)
 
         _save_auc_trials_plot(auc_query_points, all_trial_aucs, args.out_dir, args.n_trials)
         _save_mp_trials_plot(auc_query_points, all_trial_mp_counts, args.out_dir, args.n_trials)
+        _save_test_loss_trials_plot(eval_query_points, all_trial_test_losses, args.out_dir, args.n_trials)
 
     print(f"\nAll outputs saved to {args.out_dir}/")
     return first_trial_results

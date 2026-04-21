@@ -94,10 +94,10 @@ python active_learning.py \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
   --strategy        random \
-  --reweighting     soft \
+  --reweighting     none \
   --soft-topk       50 \
-  --total-queries   6000 \
-  --eval-every      200 \
+  --total-queries   100 \
+  --eval-every      10 \
   --lambda-MP       0.01 \
   --wass-pool-size  50000 \
   --C               10000.0 \
@@ -105,16 +105,16 @@ python active_learning.py \
   --seed            42 \
   --n-trials        16 \
   --n-snapshots     10 \
-  --out-dir         al_random_soft_6k && \
+  --out-dir         al_random_100 && \
 python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
   --strategy        uncertainty \
-  --reweighting     soft \
+  --reweighting     none \
   --soft-topk       50 \
-  --total-queries   6000 \
-  --eval-every      200 \
+  --total-queries   100 \
+  --eval-every      10 \
   --lambda-MP       0.01 \
   --wass-pool-size  50000 \
   --C               10000.0 \
@@ -122,16 +122,16 @@ python active_learning.py \
   --seed            42 \
   --n-trials        16 \
   --n-snapshots     10 \
-  --out-dir         al_uncertainty_soft_6k && \
+  --out-dir         al_uncertainty_100 && \
 python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
   --strategy        wasserstein \
-  --reweighting     soft \
+  --reweighting     hard \
   --soft-topk       50 \
-  --total-queries   6000 \
-  --eval-every      200 \
+  --total-queries   100 \
+  --eval-every      10 \
   --lambda-MP       0.01 \
   --wass-pool-size  50000 \
   --C               10000.0 \
@@ -139,16 +139,16 @@ python active_learning.py \
   --seed            42 \
   --n-trials        16 \
   --n-snapshots     10 \
-  --out-dir         al_wasserstein_soft_6k && \
+  --out-dir         al_wasserstein_hard_100 && \
 python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
   --strategy        kmedianpp \
-  --reweighting     soft \
+  --reweighting     none \
   --soft-topk       50 \
-  --total-queries   6000 \
-  --eval-every      200 \
+  --total-queries   100 \
+  --eval-every      10 \
   --lambda-MP       0.01 \
   --wass-pool-size  50000 \
   --C               10000.0 \
@@ -156,7 +156,24 @@ python active_learning.py \
   --seed            42 \
   --n-trials        16 \
   --n-snapshots     10 \
-  --out-dir         al_kmedianpp_soft_6k
+  --out-dir         al_kmedianpp_100 && \
+python active_learning.py \
+  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
+  --full-data-file  bp_rp_lamost_normalized.h5 \
+  --feh-threshold   -2.0 \
+  --strategy        random \
+  --reweighting     hard \
+  --soft-topk       50 \
+  --total-queries   100 \
+  --eval-every      10 \
+  --lambda-MP       0.01 \
+  --wass-pool-size  50000 \
+  --C               10000.0 \
+  --eval-size       500000 \
+  --seed            42 \
+  --n-trials        16 \
+  --n-snapshots     10 \
+  --out-dir         al_random_hard_100
 ```
 
 ```powershell
