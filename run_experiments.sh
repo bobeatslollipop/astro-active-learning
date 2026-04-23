@@ -6,23 +6,30 @@ WARM_START=bp_rp_lamost_normalized_low_teff.h5
 FULL_DATA=bp_rp_lamost_normalized.h5
 FEH_THRESHOLD=-2.0
 TOTAL_QUERIES=100
-EVAL_EVERY=10
+EVAL_EVERY=5
 LAMBDA_MP=0.01
-WASS_POOL=50000
+WASS_POOL=45000
 C=10000.0
 EVAL_SIZE=500000
 SEED=42
-N_TRIALS=16
-N_SNAPSHOTS=10
-SOFT_TOPK=50
+N_TRIALS=32
+N_SNAPSHOTS=20
+SOFT_TOPK=20
 
 # ── Experiments: "strategy  reweighting  out_dir" ──
 EXPERIMENTS=(
-  "random        none  al_random_${TOTAL_QUERIES}"
-  "uncertainty   none  al_uncertainty_${TOTAL_QUERIES}"
-  "wasserstein   hard  al_wasserstein_hard_${TOTAL_QUERIES}"
-  "kmedianpp     none  al_kmedianpp_${TOTAL_QUERIES}"
-  "random        hard  al_random_hard_${TOTAL_QUERIES}"
+  # "random        none  al_random_${TOTAL_QUERIES}"
+  # "uncertainty   none  al_uncertainty_${TOTAL_QUERIES}"
+  "uncertainty   hard  al_uncertainty_hard_${TOTAL_QUERIES}"
+  # "wasserstein   none  al_wasserstein_${TOTAL_QUERIES}"
+  # "wasserstein   hard  al_wasserstein_hard_${TOTAL_QUERIES}"
+  # "kmedianpp     none  al_kmedianpp_${TOTAL_QUERIES}"
+  # "random        hard  al_random_hard_${TOTAL_QUERIES}"
+  # "kmedianpp     hard  al_kmedianpp_hard_${TOTAL_QUERIES}"
+  "wasserstein   soft  al_wasserstein_soft_${TOTAL_QUERIES}"
+  "kmedianpp     soft  al_kmedianpp_soft_${TOTAL_QUERIES}"
+  "random        soft  al_random_soft_${TOTAL_QUERIES}"
+  "uncertainty   soft  al_uncertainty_soft_${TOTAL_QUERIES}"
 )
 
 # ── Run each experiment ──
