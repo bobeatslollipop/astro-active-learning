@@ -89,13 +89,16 @@ Visualize high-dimensional BP/RP embeddings using UMAP, t-SNE, or PCA, colored b
 Trains a logistic regression classifier via active learning, starting from a biased initial set (e.g. low-$T_{\rm eff}$ stars) and iteratively querying the full population.
 
 ```bash
+CUDA_VISIBLE_DEVICES=1
+
 python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
-  --strategy        random \
-  --reweighting     none \
-  --soft-topk       50 \
+  --strategy        entropicOT \
+  --reweighting     soft \
+  --soft-topk       20 \
+  --softmax-pool-size 500000 \
   --total-queries   100 \
   --eval-every      10 \
   --lambda-MP       0.01 \
@@ -137,6 +140,9 @@ Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `l
 | `--eval-every` | `50` | Retrain and evaluate every k queries. |
 | `--lambda-MP` | `1.0` | Desired total-weight ratio MP/MR. Per-sample weights auto-scale: $w_{MP} = \lambda \cdot n_{MR}/n_{MP}$. |
 | `--C` | `1.0` | Inverse regularisation strength. |
+| `--reweighting` | `none` | Covariate-shift correction: `none`=uniform, `hard`=Voronoi, `soft`=temperature softmin. |
+| `--soft-topk` | `0` | Top-K nearest labeled points for soft reweighting. 0=auto-calibrate per snapshot. |
+| `--softmax-pool-size` | `None` | Subsample pool to this size for soft reweighting. `None` uses the full pool; e.g. `500000` computes softmax weights on a 500k subsample instead of the full 5M pool. Hard reweighting is unaffected. |
 | `--eval-size` | `100000` | Size of random eval subsample drawn from the full population. |
 | `--warm-start-max` | `None` | Cap warm-start size (subsampled if exceeded). |
 | `--pool-max` | `None` | Cap full-population size (subsampled if exceeded). |
@@ -158,28 +164,28 @@ Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `l
 
 ```bash
 # Auto-discover all experiment subdirectories that contain auc_trials.json
-python compare_auc_trials.py --base-dir experiment_results/
+python compare_auc_trials.py --base-dir experiment_results_100/
 
 
 # Compare a specific subset, with custom legend labels and output file
 python compare_auc_trials.py \
-  al_random_6k al_uncertainty_6k al_kmedianpp_6k al_wasserstein_hard_6k \
+  al_random_100 al_uncertainty_100 al_kmedianpp_100 al_wasserstein_hard_100 \
   --labels "Random" "Uncertainty" "K-Median++" "Wasserstein (hard)" \
-  --out comparison_6k.png
+  --out comparison_100.png
 
 # Also overlay the individual trial lines (lighter, thinner)
 python compare_auc_trials.py \
-  al_random_6k al_uncertainty_6k \
+  al_random_100 al_uncertainty_100 \
   --labels "Random" "Uncertainty" \
   --show-trials \
   --out comparison_with_trials.png
 
 # Custom figure size and title
 python compare_auc_trials.py \
-  al_random_6k al_uncertainty_6k al_kmedianpp_6k \
+  al_random_100 al_uncertainty_100 al_kmedianpp_100 \
   --figsize 14 7 \
-  --title "6 000-Query Active Learning: PR-AUC Comparison" \
-  --out comparison_6k_wide.png
+  --title "100-Query Active Learning: PR-AUC Comparison" \
+  --out comparison_100_wide.png
 ```
 
 ### Arguments

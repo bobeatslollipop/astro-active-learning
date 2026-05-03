@@ -431,6 +431,228 @@ def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
     return chosen
 
 
+# ── Entropic OT Sampling ────────────────────────────────
+# Same greedy framework as Wasserstein, but replaces the hard min
+# (nearest-neighbor assignment) with a soft min (entropic / log-sum-exp),
+# yielding an entropic OT cost.
+
+def query_entropicOT(X_pool, clf, n, rng, *, X_labeled=None, state=None,
+                     pool_size=50000, temperature=1.0, **kw):
+    """
+    Approximate entropic OT sampling via soft greedy coupling.
+
+    Like ``query_wasserstein``, this subsamples a pool and greedily selects
+    n points.  The difference is the objective being minimised at each step:
+
+        Wasserstein:   WWD = (1/|T|) Σ_j  min_i  d(t_j, s_i)
+        Entropic OT:   EOT = (1/|T|) Σ_j  -τ · log Σ_i exp(-d(t_j, s_i)/τ)
+
+    The entropic OT cost is a smooth (temperature-controlled) relaxation of
+    the Wasserstein cost.  τ → 0 recovers hard Wasserstein; τ → ∞ makes all
+    candidates equally good.
+
+    The greedy step picks the candidate u that yields the lowest EOT when u
+    is added to the current labeled/selected set S.  We maintain a running
+    sum-of-exponentials for each target point j, which enables O(ps) updates
+    per step (vs. O(ps × |changed|) for Wasserstein).
+
+    Parameters
+    ----------
+    pool_size : int
+        Number of candidate points subsampled from X_pool.
+    temperature : float
+        Regularisation parameter τ for the soft-min.  Smaller values
+        approach the hard Wasserstein solution.
+    """
+    n_pool = len(X_pool)
+    n_pick = min(n, n_pool)
+    effective_ps = min(pool_size, n_pool)
+
+    # Random subpool — serves as both target distribution and candidate set
+    subpool_idx = rng.choice(n_pool, effective_ps, replace=False)
+    T = X_pool[subpool_idx]  # (effective_ps, d)
+
+    try:
+        import torch
+        has_torch = True
+    except ImportError:
+        has_torch = False
+
+    if has_torch and torch.cuda.is_available():
+        chosen = _entropicOT_coupling_torch(T, X_labeled, n_pick, rng, temperature)
+    else:
+        chosen = _entropicOT_coupling_numpy(T, X_labeled, n_pick, rng, temperature)
+
+    return subpool_idx[np.array(chosen, dtype=np.intp)]
+
+
+def _entropicOT_coupling_numpy(T, X_labeled, n_pick, rng, temperature):
+    """CPU greedy entropic OT coupling — memory-efficient.
+
+    Avoids storing the full ps×ps distance matrix.  Instead, at each greedy
+    step, distances from remaining candidates to all targets are computed
+    on-the-fly in chunks.
+
+    Memory: O(ps × CHUNK_C) instead of O(ps²).
+    """
+    ps = len(T)
+    tau = float(temperature)
+
+    # Initialise log_exp_sum from labeled points (log-space for stability)
+    # log_exp_sum[j] = log Σ_{i ∈ labeled} exp(-d(t_j, l_i) / τ)
+    log_exp_sum = np.full(ps, -np.inf, dtype=np.float64)
+    if X_labeled is not None and len(X_labeled) > 0:
+        CHUNK = 5000
+        for start in range(0, len(X_labeled), CHUNK):
+            end = min(start + CHUNK, len(X_labeled))
+            dists = cdist(T, X_labeled[start:end], metric='euclidean').astype(np.float32)
+            chunk_logits = (-dists / tau).astype(np.float64)
+            # logsumexp over the chunk dimension
+            max_cl = chunk_logits.max(axis=1)
+            chunk_lse = max_cl + np.log(np.exp(chunk_logits - max_cl[:, None]).sum(axis=1))
+            log_exp_sum = np.logaddexp(log_exp_sum, chunk_lse)
+            del dists, chunk_logits
+
+    print(f"  [CPU] Entropic OT coupling: pool_size={ps}, τ={tau}, selecting {n_pick}")
+
+    CHUNK_C = min(2000, ps)
+    chosen = []
+    available = np.ones(ps, dtype=bool)
+
+    for k in range(n_pick):
+        avail_idx = np.where(available)[0]
+        n_avail = len(avail_idx)
+
+        best_cost = np.inf
+        best_u = -1
+
+        # Evaluate all available candidates in chunks
+        for start_c in range(0, n_avail, CHUNK_C):
+            end_c = min(start_c + CHUNK_C, n_avail)
+            chunk_idx = avail_idx[start_c:end_c]
+
+            # Distances from chunk candidates to all targets: (chunk_size, ps)
+            dists = cdist(T[chunk_idx], T, metric='euclidean').astype(np.float32)
+            logits = (-dists / tau).astype(np.float64)
+            del dists
+
+            # cost(u) = -(τ/ps) * Σ_j logaddexp(log_exp_sum[j], logits[u, j])
+            costs = -(tau / ps) * np.logaddexp(
+                log_exp_sum[np.newaxis, :], logits
+            ).sum(axis=1)
+            del logits
+
+            chunk_best = np.argmin(costs)
+            if costs[chunk_best] < best_cost:
+                best_cost = costs[chunk_best]
+                best_u = int(chunk_idx[chunk_best])
+
+        chosen.append(best_u)
+        available[best_u] = False
+
+        # Update log_exp_sum with the selected point's contribution
+        best_dists = cdist(T[best_u:best_u + 1], T, metric='euclidean').astype(np.float32).ravel()
+        best_logits = (-best_dists / tau).astype(np.float64)
+        log_exp_sum = np.logaddexp(log_exp_sum, best_logits)
+
+    return chosen
+
+
+def _entropicOT_coupling_torch(T, X_labeled, n_pick, rng, temperature):
+    """GPU greedy entropic OT coupling — memory-efficient.
+
+    Avoids storing the full ps×ps distance/logits matrices by computing
+    candidate distances on-the-fly in chunks during each greedy step.
+
+    Memory: O(ps × d + ps × CHUNK_C) instead of O(ps²).
+    For ps=50k the savings are ~50 GB → ~2 GB peak GPU usage.
+    """
+    import torch
+    device = torch.device('cuda')
+    ps = len(T)
+    tau = float(temperature)
+
+    T_t = torch.tensor(T, dtype=torch.float32, device=device)
+    T_sq = (T_t ** 2).sum(dim=1)  # (ps,)
+
+    # Initialise log_exp_sum from labeled points (in log-space for stability)
+    # log_exp_sum[j] = log Σ_{i ∈ labeled} exp(-d(t_j, l_i)/τ)
+    log_exp_sum = torch.full((ps,), -float('inf'), dtype=torch.float64, device=device)
+    if X_labeled is not None and len(X_labeled) > 0:
+        X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
+        X_l_sq = (X_l ** 2).sum(dim=1)
+        CHUNK = 10000
+        for start in range(0, len(X_l), CHUNK):
+            end = min(start + CHUNK, len(X_l))
+            dists = T_sq.unsqueeze(1) + X_l_sq[start:end].unsqueeze(0)
+            dists.addmm_(T_t, X_l[start:end].T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+            chunk_logits = (-dists / tau).to(torch.float64)
+            chunk_lse = torch.logsumexp(chunk_logits, dim=1)  # (ps,)
+            log_exp_sum = torch.logaddexp(log_exp_sum, chunk_lse)
+            del dists, chunk_logits, chunk_lse
+        del X_l, X_l_sq
+        torch.cuda.empty_cache()
+
+    print(f"  [GPU] Entropic OT coupling: pool_size={ps}, τ={tau}, selecting {n_pick}")
+
+    # Determine chunk size for candidate evaluation based on available VRAM
+    # Each chunk needs: (CHUNK_C, ps) float32 dists + (CHUNK_C, ps) float64 logaddexp
+    # ≈ ps × CHUNK_C × 12 bytes
+    try:
+        props = torch.cuda.get_device_properties(device)
+        free_vram = props.total_memory - torch.cuda.memory_allocated(device)
+        CHUNK_C = max(500, int(free_vram * 0.25 / (ps * 12)))
+        CHUNK_C = min(CHUNK_C, ps)
+    except Exception:
+        CHUNK_C = min(2000, ps)
+
+    chosen = []
+    available = torch.ones(ps, dtype=torch.bool, device=device)
+    eot_costs = torch.full((ps,), float('inf'), dtype=torch.float64, device=device)
+
+    for k in range(n_pick):
+        # Compute EOT cost for all available candidates (chunked)
+        avail_idx = torch.where(available)[0]
+        n_avail = len(avail_idx)
+
+        for start_c in range(0, n_avail, CHUNK_C):
+            end_c = min(start_c + CHUNK_C, n_avail)
+            chunk_idx = avail_idx[start_c:end_c]
+
+            # Distances from chunk candidates to all targets: (chunk_size, ps)
+            chunk_T = T_t[chunk_idx]
+            dists = T_sq[chunk_idx].unsqueeze(1) + T_sq.unsqueeze(0)
+            dists.addmm_(chunk_T, T_t.T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+
+            # logits[c, j] = -d(t_j, candidate_c) / τ
+            logits = (-dists / tau).to(torch.float64)
+            del dists
+
+            # cost(c) = -(τ/ps) * Σ_j logaddexp(log_exp_sum[j], logits[c, j])
+            costs = -(tau / ps) * torch.logaddexp(
+                log_exp_sum.unsqueeze(0), logits
+            ).sum(dim=1)
+            eot_costs[chunk_idx] = costs
+            del logits, costs, chunk_T
+
+        best = torch.argmin(eot_costs).item()
+        chosen.append(best)
+        available[best] = False
+        eot_costs[best] = float('inf')
+
+        # Update log_exp_sum with the selected point's contribution
+        best_dists = (T_sq + T_sq[best] - 2.0 * T_t @ T_t[best]).clamp_(min=0.0).sqrt_()
+        best_logits = (-best_dists / tau).to(torch.float64)
+        log_exp_sum = torch.logaddexp(log_exp_sum, best_logits)
+        del best_dists, best_logits
+
+    del T_t
+    torch.cuda.empty_cache()
+    return chosen
+
+
 # ── k-Median++ Sampling ──────────────────────────────────
 # Core-set / farthest-first distance maintenance, but replaces
 # the greedy argmax with D(x) sampling ∝ min_dist (k-median++ init).
@@ -791,33 +1013,104 @@ def _soft_voronoi_torch(X_pool, X_labeled, temperature, state=None, topk=0):
     n_labeled = len(X_labeled)
 
     # ── Determine effective K for top-K truncated softmax ──
-    # Called BEFORE loading full tensors to minimise peak GPU memory.
     if topk <= 0:
         if n_labeled <= 50:
             K = n_labeled
         else:
-            try:
-                K = _auto_topk(X_pool, X_labeled, temperature, device)
-                print(f"    [Auto top-K] K={K} / {n_labeled} labeled "
-                      f"(>= 99.9% softmax coverage)")
-            except RuntimeError:  # CUDA OOM during calibration
-                K = min(50, n_labeled)
-                print(f"    [Auto top-K] OOM during calibration, falling back to K={K}")
-                torch.cuda.empty_cache()
+            # Reuse cached K (auto-topk is expensive and changes slowly)
+            if state and 'K' in state:
+                K = min(state['K'], n_labeled)
+                print(f"    [Top-K] Reusing cached K={K} / {n_labeled} labeled")
+            else:
+                try:
+                    K = _auto_topk(X_pool, X_labeled, temperature, device)
+                    print(f"    [Auto top-K] K={K} / {n_labeled} labeled "
+                          f"(>= 99.9% softmax coverage)")
+                except RuntimeError:
+                    K = min(50, n_labeled)
+                    print(f"    [Auto top-K] OOM during calibration, falling back to K={K}")
+                    torch.cuda.empty_cache()
     else:
         K = min(topk, n_labeled)
         if K < n_labeled:
             print(f"    [Top-K] Using user-specified K={K} / {n_labeled} labeled")
 
     use_topk = K < n_labeled
+    prev_n = state.get('n_labeled', 0) if state else 0
 
+    # ── Incremental path: only compute distances to NEW labeled points ──
+    if (state and use_topk and prev_n > 0 and prev_n < n_labeled
+            and 'topk_dists' in state
+            and state['topk_dists'].shape[1] >= K):
+        n_new = n_labeled - prev_n
+        K_old = state['topk_dists'].shape[1]
+        cached_dists = state['topk_dists']   # (n_pool, K_old) float32 CPU
+        cached_idx = state['topk_idx']       # (n_pool, K_old) int64 CPU
+        print(f"    [Incremental soft] {n_new} new labeled, merging with cached K={K_old}")
+
+        X_p = torch.tensor(X_pool, dtype=torch.float32, device=device)
+        X_new = torch.tensor(X_labeled[prev_n:], dtype=torch.float32, device=device)
+        X_p_sq = (X_p ** 2).sum(dim=1)
+        X_new_sq = (X_new ** 2).sum(dim=1)
+
+        try:
+            props = torch.cuda.get_device_properties(device)
+            free_vram = props.total_memory - torch.cuda.memory_allocated(device)
+            target_elements = int(free_vram * 0.25 / 4)
+            CHUNK_P = max(5000, target_elements // max(n_new + K_old, 1))
+        except:
+            CHUNK_P = 30000
+
+        weight_accum = torch.zeros(n_labeled, dtype=torch.float64, device=device)
+        new_topk_d = torch.empty(n_pool, K, dtype=torch.float32)
+        new_topk_i = torch.empty(n_pool, K, dtype=torch.int64)
+
+        for start_p in range(0, n_pool, CHUNK_P):
+            end_p = min(start_p + CHUNK_P, n_pool)
+            cs = end_p - start_p
+            chunk_p = X_p[start_p:end_p]
+
+            # Distances to new labeled points only
+            nd = X_p_sq[start_p:end_p].unsqueeze(1) + X_new_sq.unsqueeze(0)
+            nd.addmm_(chunk_p, X_new.T, beta=1.0, alpha=-2.0)
+            nd.clamp_(min=0.0).sqrt_()  # (cs, n_new)
+
+            new_idx = torch.arange(prev_n, n_labeled, device=device).unsqueeze(0).expand(cs, -1)
+            old_d = cached_dists[start_p:end_p].to(device)
+            old_i = cached_idx[start_p:end_p].to(device)
+
+            # Merge cached top-K with new distances, re-select top-K
+            mg_d = torch.cat([old_d, nd], dim=1)
+            mg_i = torch.cat([old_i, new_idx], dim=1)
+            tk_d, tk_pos = mg_d.topk(K, dim=1, largest=False)
+            tk_i = torch.gather(mg_i, 1, tk_pos)
+
+            new_topk_d[start_p:end_p] = tk_d.cpu()
+            new_topk_i[start_p:end_p] = tk_i.cpu()
+
+            logits = tk_d.neg_().div_(temperature)
+            sa = torch.softmax(logits, dim=1)
+            weight_accum.scatter_add_(0, tk_i.reshape(-1).long(),
+                                      sa.reshape(-1).to(torch.float64))
+            del nd, old_d, old_i, mg_d, mg_i, tk_d, tk_pos, tk_i, logits, sa
+
+        state['topk_dists'] = new_topk_d
+        state['topk_idx'] = new_topk_i
+        state['n_labeled'] = n_labeled
+        state['K'] = K
+
+        weights = weight_accum / n_pool
+        weights = (weights * n_labeled).cpu().numpy().astype(np.float64)
+        del X_p, X_new
+        torch.cuda.empty_cache()
+        return weights
+
+    # ── Full computation (first call or non-topk) ──
     X_p = torch.tensor(X_pool, dtype=torch.float32, device=device)
     X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
     X_p_sq = (X_p ** 2).sum(dim=1)
     X_l_sq = (X_l ** 2).sum(dim=1)
 
-    # Dynamic chunk sizing — softmax needs the dist matrix + exp buffer,
-    # so be slightly more conservative than hard Voronoi
     try:
         props = torch.cuda.get_device_properties(device)
         free_vram = props.total_memory - torch.cuda.memory_allocated(device)
@@ -826,39 +1119,48 @@ def _soft_voronoi_torch(X_pool, X_labeled, temperature, state=None, topk=0):
     except:
         CHUNK_P = 30000
 
-    # Accumulate soft assignment sums for each labeled point
     weight_accum = torch.zeros(n_labeled, dtype=torch.float64, device=device)
+
+    # Allocate cache for top-K if applicable
+    cache_topk = use_topk and state is not None
+    if cache_topk:
+        all_topk_d = torch.empty(n_pool, K, dtype=torch.float32)
+        all_topk_i = torch.empty(n_pool, K, dtype=torch.int64)
 
     for start_p in range(0, n_pool, CHUNK_P):
         end_p = min(start_p + CHUNK_P, n_pool)
         chunk_p = X_p[start_p:end_p]
 
-        # Euclidean distances: sqrt(||p||^2 + ||l||^2 - 2*p@l)
         dists = X_p_sq[start_p:end_p].unsqueeze(1) + X_l_sq.unsqueeze(0)
         dists.addmm_(chunk_p, X_l.T, beta=1.0, alpha=-2.0)
         dists.clamp_(min=0.0).sqrt_()
 
         if use_topk:
-            # Keep only K nearest labeled points per pool point
             topk_dists, topk_idx = dists.topk(K, dim=1, largest=False)
-            del dists  # free the large (chunk, n_labeled) matrix immediately
+            del dists
+
+            if cache_topk:
+                all_topk_d[start_p:end_p] = topk_dists.cpu()
+                all_topk_i[start_p:end_p] = topk_idx.cpu()
 
             logits = topk_dists.neg_().div_(temperature)
-            soft_assign = torch.softmax(logits, dim=1)  # (chunk, K)
-
-            # Scatter-add contributions to the corresponding labeled indices
+            soft_assign = torch.softmax(logits, dim=1)
             flat_idx = topk_idx.reshape(-1).long()
             flat_vals = soft_assign.reshape(-1).to(torch.float64)
             weight_accum.scatter_add_(0, flat_idx, flat_vals)
-
             del topk_dists, topk_idx, logits, soft_assign
         else:
-            # Full softmax (K == n_labeled or n_labeled is small)
-            logits = dists.neg_().div_(temperature)       # -dist / τ, in-place
-            soft_assign = torch.softmax(logits, dim=1)    # (CHUNK_P, n_labeled)
-
+            logits = dists.neg_().div_(temperature)
+            soft_assign = torch.softmax(logits, dim=1)
             weight_accum += soft_assign.sum(dim=0).to(torch.float64)
             del dists, logits, soft_assign
+
+    if state is not None:
+        if cache_topk:
+            state['topk_dists'] = all_topk_d
+            state['topk_idx'] = all_topk_i
+        state['n_labeled'] = n_labeled
+        state['K'] = K
 
     weights = weight_accum / n_pool
     weights = (weights * n_labeled).cpu().numpy().astype(np.float64)
@@ -909,6 +1211,7 @@ STRATEGIES = {
     "entropy": query_entropy,
     "margin": query_margin,
     "wasserstein": query_wasserstein,
+    "entropicOT": query_entropicOT,
     "kmedianpp": query_kmedianpp,
     "purely_random": query_purely_random,
 }
@@ -1329,6 +1632,15 @@ def run_active_learning(args):
         voronoi_state = {}
         soft_voronoi_state = {}
         final_sw = None
+
+        # Pre-compute fixed soft-pool subsample for this trial (reused across snapshots
+        # so the incremental top-K cache stays valid)
+        if args.reweighting == "soft" and args.softmax_pool_size and args.softmax_pool_size < len(X_pool):
+            soft_pool_idx = rng.choice(len(X_pool), args.softmax_pool_size, replace=False)
+            X_soft_pool = X_pool[soft_pool_idx]
+        else:
+            X_soft_pool = X_pool
+
         trial_aucs = []
         trial_mp_counts = []
         trial_test_losses = []   # test losses at each eval point for this trial
@@ -1350,8 +1662,9 @@ def run_active_learning(args):
                 sw, voronoi_state = compute_voronoi_weights(X_pool, Xl, voronoi_state)
             elif args.reweighting == "soft":
                 print(f"  [Voronoi-Soft] Computing sample weights (τ={args.temperature}, "
-                      f"{n_labeled} labeled vs {len(X_pool)} pool)...")
-                sw = compute_soft_voronoi_weights(X_pool, Xl, args.temperature,
+                      f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
+                      f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
+                sw = compute_soft_voronoi_weights(X_soft_pool, Xl, args.temperature,
                                                    soft_state=soft_voronoi_state,
                                                    topk=args.soft_topk)
 
@@ -1392,7 +1705,8 @@ def run_active_learning(args):
 
             sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
                               X_labeled=X_labeled[:n_labeled], state=strategy_state,
-                              pool_size=args.wass_pool_size)
+                              pool_size=args.wass_pool_size,
+                              temperature=args.eot_temperature)
             pool_idx = avail_idx[sel]
 
             # Append to pre-allocated arrays (no vstack/concatenate)
@@ -1526,12 +1840,18 @@ def main():
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
        help="Top-K for soft reweighting. 0=auto (calibrate K per snapshot). Only used when --reweighting=soft.")
+    a("--softmax-pool-size", type=int, default=None,
+       help="Subsample pool to this size for soft reweighting. By default (None) uses the full pool. "
+            "Setting e.g. 500000 computes softmax weights on a 500k subsample instead of the full 5M pool. "
+            "Hard reweighting is unaffected.")
 
     # Practical
     a("--eval-size",       type=int, default=100_000, help="Eval subsample size.")
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
-    a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein strategy. Brute-force search is O(n × pool_size²).")
+    a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein / entropicOT strategy. Brute-force search is O(n × pool_size²).")
+    a("--eot-temperature", type=float, default=1.0,
+       help="Temperature τ for entropicOT query strategy. τ→0 = hard Wasserstein, τ→∞ = uniform. Only used when --strategy=entropicOT.")
     a("--n-trials",        type=int, default=1,       help="Number of independent trials.  When > 1, a mean±std PR-AUC plot is generated.")
     a("--n-snapshots",     type=int, default=3,       help="Number of evenly-spaced AUC measurement points.  total_queries must be divisible by n_snapshots × eval_every (default: 3×200=600 divides 3000).")
     a("--seed",            type=int, default=42)

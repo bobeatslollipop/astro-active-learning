@@ -6,21 +6,22 @@ WARM_START=bp_rp_lamost_normalized_low_teff.h5
 FULL_DATA=bp_rp_lamost_normalized.h5
 FEH_THRESHOLD=-2.0
 TOTAL_QUERIES=100
-EVAL_EVERY=5
+EVAL_EVERY=10
 LAMBDA_MP=0.01
 WASS_POOL=45000
 C=10000.0
 EVAL_SIZE=500000
 SEED=42
-N_TRIALS=32
-N_SNAPSHOTS=20
+N_TRIALS=16
+N_SNAPSHOTS=10
 SOFT_TOPK=20
+SOFTMAX_POOL=500000
 
 # ── Experiments: "strategy  reweighting  out_dir" ──
 EXPERIMENTS=(
   # "random        none  al_random_${TOTAL_QUERIES}"
   # "uncertainty   none  al_uncertainty_${TOTAL_QUERIES}"
-  "uncertainty   hard  al_uncertainty_hard_${TOTAL_QUERIES}"
+  # "uncertainty   hard  al_uncertainty_hard_${TOTAL_QUERIES}"
   # "wasserstein   none  al_wasserstein_${TOTAL_QUERIES}"
   # "wasserstein   hard  al_wasserstein_hard_${TOTAL_QUERIES}"
   # "kmedianpp     none  al_kmedianpp_${TOTAL_QUERIES}"
@@ -47,6 +48,7 @@ for exp in "${EXPERIMENTS[@]}"; do
     --strategy        "$strategy" \
     --reweighting     "$reweighting" \
     --soft-topk       "$SOFT_TOPK" \
+    --softmax-pool-size "$SOFTMAX_POOL" \
     --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \
     --lambda-MP       "$LAMBDA_MP" \
