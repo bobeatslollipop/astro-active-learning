@@ -1,3 +1,18 @@
+# Astro Active Learning
+
+## Project Structure
+
+This project implements an active learning framework for stellar classification, focusing on identifying metal-poor stars from imbalanced and biased datasets.
+
+*   **`active_learning.py`**: The core active learning loop. Implements various query strategies (`wasserstein`, `entropicOT`, `kmedianpp`, `uncertainty`, `random`) and dataset shift reweighting methods (`hard`, `soft`, `none`).
+*   **`run_experiments.sh`**: A shell script to batch run active learning experiments across different configurations.
+*   **`linear_classifier.py`, `linear_regression.py`, `two_layers.py`**: Baseline model training scripts (logistic regression, linear regression, and a 2-layer neural network) for training on fixed datasets.
+*   **`compare_auc_trials.py`**: A plotting utility to compare PR-AUC learning curves across multiple active learning runs.
+*   **`visualize_embedding.py`, `visualize_feh_dist.py`**: Utilities for UMAP/t-SNE embedding visualizations and plotting metallicity ([Fe/H]) distributions.
+*   **`normalize_h5.py`**: Script to L2-normalize the stellar spectra features in the HDF5 datasets.
+*   **`experiment_results_100/`, `experiment_results_6k/`**: Output directories containing logs, weights, and plots from active learning experiments.
+*   **`random_training/`, `low_temp_training/`**: Scripts and data splits for baseline model training.
+
 ## Dataset Generation
 Before training, you need to generate the split training and testing datasets.
 ```bash
@@ -199,3 +214,9 @@ python compare_auc_trials.py \
 | `--figsize W H` | `12 7` | Figure width and height in inches. |
 | `--title` | *(default string)* | Plot title. |
 | `--base-dir` | `.` | Root directory for auto-discovery mode. |
+
+## Experiment Conclusions: 100 Queries (`experiment_results_100`)
+
+The `experiment_results_100` directory contains the results of an active learning evaluation where a logistic regression model is initialized on a heavily biased sample (low-temperature stars only) and updated using a very small budget of 100 newly queried stars from the full population.
+
+In this "biased initial sample + few queries" regime, the **Wasserstein hard** strategy (core-set Wasserstein querying combined with hard Voronoi reweighting) emerges as the top-performing method. It effectively corrects the covariate shift of the initial biased sample while efficiently querying the most informative points to construct a representative target distribution. We strongly recommend `Wasserstein hard` as the primary active learning strategy for scenarios with severe initial bias and extremely limited query budgets.
