@@ -406,12 +406,11 @@ def main():
     print(f"Final Test Accuracy: {test_accs[-1]:.4f}")
 
     # --- Save Weights ---
-    print("Saving model weights to PyTorch model file...")
-    out_model = 'twolayers_model.pt'
-    
-    out_model = os.path.join(out_dir, out_model)
-    torch.save(model.state_dict(), out_model)
-    print(f"Model saved to {out_model}")
+    # print("Saving model weights to PyTorch model file...")
+    # out_model = 'twolayers_model.pt'
+    # out_model = os.path.join(out_dir, out_model)
+    # torch.save(model.state_dict(), out_model)
+    # print(f"Model saved to {out_model}")
 
     evaluate_all(model, device, out_dir)
 
