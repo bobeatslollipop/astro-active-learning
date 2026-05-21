@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export CUDA_VISIBLE_DEVICES=1
+
 # ── Shared hyperparameters (edit once, applies to all experiments) ──
 WARM_START=bp_rp_lamost_normalized_low_teff.h5
 FULL_DATA=bp_rp_lamost_normalized.h5
@@ -16,21 +18,14 @@ N_TRIALS=16
 N_SNAPSHOTS=10
 SOFT_TOPK=20
 SOFTMAX_POOL=500000
+REWEIGHT_LAMBDA=1.0
 
 # ── Experiments: "strategy  reweighting  out_dir" ──
 EXPERIMENTS=(
-  # "random        none  al_random_${TOTAL_QUERIES}"
-  # "uncertainty   none  al_uncertainty_${TOTAL_QUERIES}"
-  # "uncertainty   hard  al_uncertainty_hard_${TOTAL_QUERIES}"
-  # "wasserstein   none  al_wasserstein_${TOTAL_QUERIES}"
-  # "wasserstein   hard  al_wasserstein_hard_${TOTAL_QUERIES}"
-  # "kmedianpp     none  al_kmedianpp_${TOTAL_QUERIES}"
-  # "random        hard  al_random_hard_${TOTAL_QUERIES}"
-  # "kmedianpp     hard  al_kmedianpp_hard_${TOTAL_QUERIES}"
-  "wasserstein   soft  al_wasserstein_soft_${TOTAL_QUERIES}"
-  "kmedianpp     soft  al_kmedianpp_soft_${TOTAL_QUERIES}"
-  "random        soft  al_random_soft_${TOTAL_QUERIES}"
-  "uncertainty   soft  al_uncertainty_soft_${TOTAL_QUERIES}"
+  "wasserstein   l2    experiment_results_${TOTAL_QUERIES}/al_wasserstein_l2_${TOTAL_QUERIES}"
+  "kmedianpp     l2    experiment_results_${TOTAL_QUERIES}/al_kmedianpp_l2_${TOTAL_QUERIES}"
+  "random        l2    experiment_results_${TOTAL_QUERIES}/al_random_l2_${TOTAL_QUERIES}"
+  # "uncertainty   soft  experiment_results_${TOTAL_QUERIES}/al_uncertainty_soft_${TOTAL_QUERIES}"
 )
 
 # ── Run each experiment ──
@@ -49,6 +44,7 @@ for exp in "${EXPERIMENTS[@]}"; do
     --reweighting     "$reweighting" \
     --soft-topk       "$SOFT_TOPK" \
     --softmax-pool-size "$SOFTMAX_POOL" \
+    --reweight-lambda "$REWEIGHT_LAMBDA" \
     --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \
     --lambda-MP       "$LAMBDA_MP" \
