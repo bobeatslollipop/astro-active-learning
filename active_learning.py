@@ -34,6 +34,31 @@ import matplotlib.pyplot as plt
 
 # ── Helpers ──────────────────────────────────────────────
 
+def _configure_torch_runtime():
+    """Enable fast CUDA matmul settings when PyTorch/CUDA are available."""
+    try:
+        import torch
+    except ImportError:
+        return
+
+    if not torch.cuda.is_available():
+        return
+
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+        print("  [Torch] CUDA detected; TF32 matmul enabled where supported.")
+    except Exception as exc:
+        print(f"  [Torch] Warning: CUDA runtime tuning skipped: {exc}")
+
+
+def _timing(label, start_time):
+    """Print elapsed wall time for a pipeline stage."""
+    print(f"  [Timing] {label}: {time.perf_counter() - start_time:.2f}s")
+
+
 def _nsort(s):
     """Natural sort key for strings like 'bp_2', 'bp_10'."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"([0-9]+)", s)]
@@ -159,7 +184,8 @@ def query_purely_random(X_pool, clf, n, rng, **kw):
     return rng.choice(len(X_pool), min(n, len(X_pool)), replace=False)
 
 
-def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, pool_size=50000, **kw):
+def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None,
+                      pool_size=50000, plan_size=None, available_mask=None, **kw):
     """
     Approximate Wasserstein sampling via optimal coupling (skAI-style).
 
@@ -182,12 +208,94 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, pool_s
         approximation quality vs. compute trade-off.  The brute-force
         search is O(n × pool_size²), so keep this manageable (1 000–10 000).
     """
+    if state is None:
+        state = {}
+
     n_pool = len(X_pool)
     n_pick = min(n, n_pool)
-    effective_ps = min(pool_size, n_pool)
+    if n_pick <= 0:
+        return np.empty(0, dtype=np.intp)
 
-    # Random subpool — serves as both target distribution and candidate set
-    subpool_idx = rng.choice(n_pool, effective_ps, replace=False)
+    if available_mask is None:
+        available_idx = np.arange(n_pool, dtype=np.intp)
+    else:
+        available_idx = np.flatnonzero(available_mask).astype(np.intp, copy=False)
+
+    if len(available_idx) == 0:
+        return np.empty(0, dtype=np.intp)
+
+    plan_n = int(plan_size) if plan_size is not None else n_pick
+    plan_n = max(plan_n, n_pick)
+    plan_is_valid = (
+        state.get("pool_n") == n_pool
+        and state.get("pool_array_id") == id(X_pool)
+        and state.get("pool_size") == pool_size
+        and "planned_indices" in state
+        and "plan_cursor" in state
+    )
+
+    if not plan_is_valid or state["plan_cursor"] >= len(state["planned_indices"]):
+        t_plan = time.perf_counter()
+        state["planned_indices"] = _build_wasserstein_plan(
+            X_pool, X_labeled, plan_n, rng, pool_size, available_idx
+        )
+        state["plan_cursor"] = 0
+        state["pool_n"] = n_pool
+        state["pool_array_id"] = id(X_pool)
+        state["pool_size"] = pool_size
+        _timing("Wasserstein plan build", t_plan)
+
+    selected = []
+    while len(selected) < n_pick:
+        planned = state["planned_indices"]
+        cursor = state["plan_cursor"]
+        while len(selected) < n_pick and cursor < len(planned):
+            idx = int(planned[cursor])
+            cursor += 1
+            if available_mask is None or available_mask[idx]:
+                selected.append(idx)
+        state["plan_cursor"] = cursor
+
+        if len(selected) >= n_pick or cursor < len(planned):
+            break
+
+        # Edge case: the requested batch is larger than the cached plan tail.
+        # Extend with the same greedy objective on the still-available pool.
+        selected_arr = np.array(selected, dtype=np.intp)
+        if len(selected_arr) > 0:
+            keep = ~np.isin(available_idx, selected_arr)
+            extra_available = available_idx[keep]
+            X_seed = X_pool[selected_arr]
+            if X_labeled is not None and len(X_labeled) > 0:
+                X_seed = np.vstack([X_labeled, X_seed])
+        else:
+            extra_available = available_idx
+            X_seed = X_labeled
+
+        missing = n_pick - len(selected)
+        if len(extra_available) == 0:
+            break
+
+        t_plan = time.perf_counter()
+        state["planned_indices"] = _build_wasserstein_plan(
+            X_pool, X_seed, missing, rng, pool_size, extra_available
+        )
+        state["plan_cursor"] = 0
+        _timing("Wasserstein plan extension", t_plan)
+
+    return np.array(selected, dtype=np.intp)
+
+
+def _build_wasserstein_plan(X_pool, X_labeled, n_plan, rng, pool_size, available_idx):
+    """Build a greedy Wasserstein query plan over a fixed available pool."""
+    effective_ps = min(pool_size, len(available_idx))
+    if effective_ps <= 0:
+        return np.empty(0, dtype=np.intp)
+
+    n_plan = min(n_plan, effective_ps)
+
+    # Random subpool — serves as both target distribution and candidate set.
+    subpool_idx = rng.choice(available_idx, effective_ps, replace=False)
     T = X_pool[subpool_idx]  # (effective_ps, d)
 
     try:
@@ -197,9 +305,9 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None, pool_s
         has_torch = False
 
     if has_torch and torch.cuda.is_available():
-        chosen = _wasserstein_coupling_torch(T, X_labeled, n_pick, rng)
+        chosen = _wasserstein_coupling_torch(T, X_labeled, n_plan, rng)
     else:
-        chosen = _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng)
+        chosen = _wasserstein_coupling_numpy(T, X_labeled, n_plan, rng)
 
     return subpool_idx[np.array(chosen, dtype=np.intp)]
 
@@ -312,6 +420,71 @@ def _finalize_state(min_dists, chosen, state, is_torch=False):
         state['min_dists'] = min_dists[mask]
 
 
+def _wasserstein_initial_wwds_numpy(base_min, intra_dists):
+    """Compute initial WWD scores without materialising a second ps x ps array."""
+    ps = len(base_min)
+    wwds = np.empty(ps, dtype=np.float32)
+    target_bytes = 256 * 1024 * 1024
+    row_chunk = max(1, min(ps, target_bytes // max(ps * 4, 1)))
+    for start in range(0, ps, row_chunk):
+        end = min(start + row_chunk, ps)
+        wwds[start:end] = np.minimum(base_min[np.newaxis, :],
+                                     intra_dists[start:end]).mean(axis=1)
+    return wwds
+
+
+def _wasserstein_delta_update_numpy(wwds, intra_dists, old_base, base_min, changed):
+    """Apply an incremental WWD update in column chunks."""
+    ps = len(base_min)
+    target_bytes = 256 * 1024 * 1024
+    col_chunk = max(1, min(len(changed), target_bytes // max(ps * 12, 1)))
+    for start in range(0, len(changed), col_chunk):
+        cols = changed[start:start + col_chunk]
+        old_contribs = np.minimum(old_base[cols][np.newaxis, :], intra_dists[:, cols])
+        new_contribs = np.minimum(base_min[cols][np.newaxis, :], intra_dists[:, cols])
+        wwds += (new_contribs - old_contribs).sum(axis=1) / ps
+
+
+def _torch_matrix_chunk(length, width, device, *, n_matrices=1, fraction=0.20):
+    """Choose a chunk length for a temporary CUDA matrix budget."""
+    import torch
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        target_bytes = int(free_bytes * fraction)
+        denom = max(width * n_matrices * 4, 1)
+        return max(1, min(length, target_bytes // denom))
+    except Exception:
+        return max(1, min(length, 2048))
+
+
+def _wasserstein_initial_wwds_torch(base_min, intra_dists):
+    """Compute initial WWD scores without materialising a second ps x ps tensor."""
+    import torch
+    ps = len(base_min)
+    device = base_min.device
+    wwds = torch.empty(ps, dtype=intra_dists.dtype, device=device)
+    row_chunk = _torch_matrix_chunk(ps, ps, device, n_matrices=1, fraction=0.20)
+    for start in range(0, ps, row_chunk):
+        end = min(start + row_chunk, ps)
+        wwds[start:end] = torch.minimum(
+            base_min.unsqueeze(0), intra_dists[start:end]
+        ).mean(dim=1)
+    return wwds
+
+
+def _wasserstein_delta_update_torch(wwds, intra_dists, old_base, base_min, changed):
+    """Apply an incremental WWD update in column chunks."""
+    import torch
+    ps = len(base_min)
+    device = base_min.device
+    col_chunk = _torch_matrix_chunk(len(changed), ps, device, n_matrices=3, fraction=0.12)
+    for start in range(0, len(changed), col_chunk):
+        cols = changed[start:start + col_chunk]
+        old_contribs = torch.minimum(old_base[cols].unsqueeze(0), intra_dists[:, cols])
+        new_contribs = torch.minimum(base_min[cols].unsqueeze(0), intra_dists[:, cols])
+        wwds += (new_contribs - old_contribs).sum(dim=1) / ps
+
+
 def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
     """CPU brute-force Wasserstein coupling (skAI-style find_Set).
 
@@ -338,8 +511,8 @@ def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
 
     print(f"  [CPU] Wasserstein coupling: pool_size={ps}, selecting {n_pick}")
 
-    # Initial full WWD computation for all candidates
-    wwds = np.minimum(base_min[np.newaxis, :], intra_dists).mean(axis=1)  # (ps,)
+    # Initial WWD computation for all candidates.
+    wwds = _wasserstein_initial_wwds_numpy(base_min, intra_dists)
 
     chosen = []
     available = np.ones(ps, dtype=bool)
@@ -358,10 +531,7 @@ def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
         changed = np.where(base_min < old_base)[0]
 
         if len(changed) > 0:
-            # Incremental update: only recompute the contribution of changed columns
-            old_contribs = np.minimum(old_base[changed], intra_dists[:, changed])  # (ps, |changed|)
-            new_contribs = np.minimum(base_min[changed], intra_dists[:, changed])  # (ps, |changed|)
-            wwds += (new_contribs - old_contribs).sum(axis=1) / ps
+            _wasserstein_delta_update_numpy(wwds, intra_dists, old_base, base_min, changed)
 
     return chosen
 
@@ -402,8 +572,8 @@ def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
 
     print(f"  [GPU] Wasserstein coupling: pool_size={ps}, selecting {n_pick}")
 
-    # Initial full WWD computation
-    wwds = torch.minimum(base_min.unsqueeze(0).expand(ps, ps), intra_dists).mean(dim=1)
+    # Initial WWD computation.
+    wwds = _wasserstein_initial_wwds_torch(base_min, intra_dists)
 
     chosen = []
     available = torch.ones(ps, dtype=torch.bool, device=device)
@@ -422,9 +592,7 @@ def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
         changed = torch.where(base_min < old_base)[0]
 
         if len(changed) > 0:
-            old_contribs = torch.minimum(old_base[changed], intra_dists[:, changed])
-            new_contribs = torch.minimum(base_min[changed], intra_dists[:, changed])
-            wwds += (new_contribs - old_contribs).sum(dim=1) / ps
+            _wasserstein_delta_update_torch(wwds, intra_dists, old_base, base_min, changed)
 
     del T_t, intra_dists
     torch.cuda.empty_cache()
@@ -1206,7 +1374,20 @@ def _soft_voronoi_numpy(X_pool, X_labeled, temperature, topk=0):
     return weights
 
 
-def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None):
+def _l2_chunk_size_torch(n_pool, n_labeled, device):
+    """Choose a CUDA chunk size for L2 reweighting distance blocks."""
+    import torch
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        target_elements = int(free_bytes * 0.20 / 4)
+        chunk_size = target_elements // max(n_labeled, 1)
+        return max(1, min(n_pool, chunk_size))
+    except Exception:
+        max_elements = 150_000_000
+        return max(1, min(n_pool, max_elements // max(n_labeled, 1)))
+
+
+def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_iter=40):
     """Compute optimal sample weights for labeled points that minimize
     W_1(Uniform(pool), Weighted(labeled)) + lambda * ||w||_2^2.
 
@@ -1223,14 +1404,14 @@ def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None):
     try:
         import torch
         if torch.cuda.is_available():
-            return _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state)
+            return _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter)
     except ImportError:
         pass
 
-    return _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state)
+    return _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter)
 
 
-def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state):
+def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=40):
     import torch
     
     class L2ReweightFunction(torch.autograd.Function):
@@ -1256,8 +1437,8 @@ def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state):
                     dists.addmm_(chunk_p, X_labeled_t.T, beta=1.0, alpha=-2.0)
                     dists.clamp_(min=0.0).sqrt_()
                     
-                    val = dists + z.unsqueeze(0)
-                    min_vals, argmin_idx = torch.min(val, dim=1)
+                    dists.add_(z.unsqueeze(0))
+                    min_vals, argmin_idx = torch.min(dists, dim=1)
                     
                     total_min_sum += min_vals.sum()
                     
@@ -1296,17 +1477,30 @@ def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state):
 
     z = torch.tensor(z_init, dtype=torch.float32, device=device, requires_grad=True)
 
-    X_p = torch.tensor(X_pool, dtype=torch.float32, device=device)
-    X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
-    
-    X_pool_sq = torch.sum(X_p ** 2, dim=1)
-    X_labeled_sq = torch.sum(X_l ** 2, dim=1)
-    
-    # Dynamic chunk size based on n_labeled to bound memory
-    max_elements = 150_000_000
-    chunk_size = max(1, max_elements // n_labeled)
+    pool_cache_id = (id(X_pool), X_pool.shape, str(X_pool.dtype))
+    if state.get('pool_cache_id') == pool_cache_id and 'X_pool_t' in state:
+        X_p = state['X_pool_t']
+        X_pool_sq = state['X_pool_sq']
+    else:
+        if 'X_pool_t' in state:
+            del state['X_pool_t'], state['X_pool_sq']
+            torch.cuda.empty_cache()
+        X_p = torch.as_tensor(X_pool, dtype=torch.float32, device=device).contiguous()
+        X_pool_sq = torch.sum(X_p ** 2, dim=1)
+        state['X_pool_t'] = X_p
+        state['X_pool_sq'] = X_pool_sq
+        state['pool_cache_id'] = pool_cache_id
+        print(f"    [L2] Cached pool tensor on GPU: {n_pool} x {X_p.shape[1]}")
 
-    optimizer = torch.optim.LBFGS([z], lr=1.0, max_iter=40, history_size=10, tolerance_grad=1e-5, tolerance_change=1e-9)
+    X_l = torch.as_tensor(X_labeled, dtype=torch.float32, device=device).contiguous()
+    X_labeled_sq = torch.sum(X_l ** 2, dim=1)
+
+    chunk_size = _l2_chunk_size_torch(n_pool, n_labeled, device)
+    print(f"    [L2] CUDA chunk size: {chunk_size} pool rows x {n_labeled} labeled")
+
+    optimizer = torch.optim.LBFGS([z], lr=1.0, max_iter=max_iter,
+                                  history_size=10, tolerance_grad=1e-5,
+                                  tolerance_change=1e-9)
 
     def closure():
         optimizer.zero_grad()
@@ -1328,10 +1522,11 @@ def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state):
     else:
         w = np.ones(n_labeled, dtype=np.float64)
 
+    del X_l, X_labeled_sq, z
     return w
 
 
-def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state):
+def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=40):
     from scipy.optimize import minimize
 
     n_pool = len(X_pool)
@@ -1362,10 +1557,10 @@ def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state):
         for start_p in range(0, n_pool, chunk_size):
             end_p = min(start_p + chunk_size, n_pool)
             D_chunk = cdist(X_pool[start_p:end_p], X_labeled, metric='euclidean')
-            D_plus_z = D_chunk + z_val[np.newaxis, :]
-            
-            min_vals = D_plus_z.min(axis=1)
-            argmin_idx = D_plus_z.argmin(axis=1)
+            D_chunk += z_val[np.newaxis, :]
+
+            min_vals = D_chunk.min(axis=1)
+            argmin_idx = D_chunk.argmin(axis=1)
             
             total_min_sum += min_vals.sum()
             counts += np.bincount(argmin_idx, minlength=n_labeled)
@@ -1380,7 +1575,7 @@ def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state):
         x0=z_init,
         jac=True,
         method='L-BFGS-B',
-        options={'maxiter': 40, 'gtol': 1e-5}
+        options={'maxiter': max_iter, 'gtol': 1e-5}
     )
 
     z_final = res.x
@@ -1749,6 +1944,7 @@ def run_active_learning(args):
 
     os.makedirs(args.out_dir, exist_ok=True)
     t0 = time.perf_counter()
+    _configure_torch_runtime()
 
     # 1. Load data (shared across all trials)
     print(f"Loading warm-start data from {args.warm_start_file} ...")
@@ -1849,10 +2045,16 @@ def run_active_learning(args):
 
             # Reweighting: compute per-sample weights to correct covariate shift
             sw = None
+            reweight_t0 = None
+            reweight_label = None
             if args.reweighting == "hard":
+                reweight_t0 = time.perf_counter()
+                reweight_label = "Voronoi-hard weights"
                 print(f"  [Voronoi-Hard] Computing sample weights ({n_labeled} labeled vs {len(X_pool)} pool)...")
                 sw, voronoi_state = compute_voronoi_weights(X_pool, Xl, voronoi_state)
             elif args.reweighting == "soft":
+                reweight_t0 = time.perf_counter()
+                reweight_label = "Voronoi-soft weights"
                 print(f"  [Voronoi-Soft] Computing sample weights (τ={args.temperature}, "
                       f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
                       f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
@@ -1860,17 +2062,28 @@ def run_active_learning(args):
                                                    soft_state=soft_voronoi_state,
                                                    topk=args.soft_topk)
             elif args.reweighting == "l2":
+                reweight_t0 = time.perf_counter()
+                reweight_label = "L2 weights"
                 print(f"  [L2] Computing sample weights (λ={args.reweight_lambda}, "
                       f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
                       f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
                 sw = compute_l2_weights(X_soft_pool, Xl, args.reweight_lambda,
-                                                    state=l2_state)
+                                        state=l2_state,
+                                        max_iter=getattr(args, "l2_max_iter_warm", 40))
+
+            if reweight_t0 is not None:
+                _timing(reweight_label, reweight_t0)
 
             final_sw = sw
 
+            train_t0 = time.perf_counter()
             clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf,
                                  sample_weight=sw)
+            _timing("Classifier train", train_t0)
+
+            eval_t0 = time.perf_counter()
             m = _record(evaluate(clf, X_eval, y_eval), n_queries, yl)
+            _timing("Evaluation", eval_t0)
 
             # Average test loss across both classes
             m["avg_test_loss"] = (m["loss_MP"] + m["loss_MR"]) / 2.0
@@ -1899,13 +2112,29 @@ def run_active_learning(args):
 
         while queried < args.total_queries and available.any():
             batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
-            avail_idx = np.where(available)[0]
+            query_t0 = time.perf_counter()
 
-            sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
-                              X_labeled=X_labeled[:n_labeled], state=strategy_state,
-                              pool_size=args.wass_pool_size,
-                              temperature=args.eot_temperature)
-            pool_idx = avail_idx[sel]
+            if args.strategy == "wasserstein":
+                pool_idx = strategy_fn(X_pool, clf, batch, rng,
+                                       X_labeled=X_labeled[:n_labeled],
+                                       state=strategy_state,
+                                       pool_size=args.wass_pool_size,
+                                       plan_size=args.total_queries,
+                                       available_mask=available,
+                                       temperature=args.eot_temperature)
+            else:
+                avail_idx = np.where(available)[0]
+                sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
+                                  X_labeled=X_labeled[:n_labeled], state=strategy_state,
+                                  pool_size=args.wass_pool_size,
+                                  temperature=args.eot_temperature)
+                pool_idx = avail_idx[sel]
+
+            _timing(f"{args.strategy} query selection", query_t0)
+
+            if len(pool_idx) == 0:
+                print("  [Query] No available points selected; stopping trial early.")
+                break
 
             # Append to pre-allocated arrays (no vstack/concatenate)
             n_new = len(pool_idx)
@@ -2036,6 +2265,8 @@ def main():
        help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, l2=L2 norm regularized Wasserstein distance.")
     a("--reweight-lambda", type=float, default=1.0,
        help="Regularisation strength lambda for L2 Wasserstein reweighting. Only used when --reweighting=l2.")
+    a("--l2-max-iter-warm", type=int, default=40,
+       help="Maximum LBFGS iterations for L2 reweighting. Default preserves the existing setting.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
