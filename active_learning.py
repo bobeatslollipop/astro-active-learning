@@ -1387,7 +1387,7 @@ def _l2_chunk_size_torch(n_pool, n_labeled, device):
         return max(1, min(n_pool, max_elements // max(n_labeled, 1)))
 
 
-def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_iter=40):
+def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_iter=15):
     """Compute optimal sample weights for labeled points that minimize
     W_1(Uniform(pool), Weighted(labeled)) + lambda * ||w||_2^2.
 
@@ -1411,7 +1411,7 @@ def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_i
     return _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter)
 
 
-def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=40):
+def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
     import torch
     
     class L2ReweightFunction(torch.autograd.Function):
@@ -1526,7 +1526,7 @@ def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=40):
     return w
 
 
-def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=40):
+def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
     from scipy.optimize import minimize
 
     n_pool = len(X_pool)
@@ -2265,8 +2265,8 @@ def main():
        help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, l2=L2 norm regularized Wasserstein distance.")
     a("--reweight-lambda", type=float, default=1.0,
        help="Regularisation strength lambda for L2 Wasserstein reweighting. Only used when --reweighting=l2.")
-    a("--l2-max-iter-warm", type=int, default=40,
-       help="Maximum LBFGS iterations for L2 reweighting. Default preserves the existing setting.")
+    a("--l2-max-iter-warm", type=int, default=15,
+       help="Maximum LBFGS iterations for L2 reweighting.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
