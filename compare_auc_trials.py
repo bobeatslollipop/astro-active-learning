@@ -382,6 +382,8 @@ def main() -> None:
 
     # 4. Plot AUC comparison
     out_path = Path(args.out)
+    if not out_path.is_absolute():
+        out_path = Path(args.base_dir) / out_path
     plot_comparison(
         experiments=experiments,
         labels=labels,
