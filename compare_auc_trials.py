@@ -30,6 +30,7 @@ Usage
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -60,13 +61,15 @@ PALETTE = [
 ]
 
 
+def natural_sort_key(path: Path) -> list:
+    """Key function for natural/alphanumeric sorting of paths."""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', path.name)]
+
+
 def find_json_dirs(base_dir: Path) -> list[Path]:
-    """Return all subdirectories of *base_dir* that contain auc_trials.json, sorted by name."""
-    found = sorted(
-        p.parent
-        for p in base_dir.glob("*/auc_trials.json")
-    )
-    return found
+    """Return all subdirectories of *base_dir* that contain auc_trials.json, sorted naturally by name."""
+    found = [p.parent for p in base_dir.glob("*/auc_trials.json")]
+    return sorted(found, key=natural_sort_key)
 
 
 def load_experiment(directory: Path) -> dict | None:
@@ -152,13 +155,22 @@ def plot_comparison(
     show_trials: bool = False,
     figsize: tuple[float, float] = (12, 7),
     title: str = "PR-AUC Comparison across Experiments",
+    cmap_runs: str | None = None,
 ) -> None:
     """Plot all experiments on the same axes with mean ± 1σ shading."""
 
     fig, ax = plt.subplots(figsize=figsize)
 
+    if cmap_runs == "none":
+        cmap_runs = None
+
+    n_exps = len(experiments)
     for i, (exp, label) in enumerate(zip(experiments, labels)):
-        color = PALETTE[i % len(PALETTE)]
+        if cmap_runs:
+            val = i / max(1, n_exps - 1)
+            color = plt.get_cmap(cmap_runs)(val)
+        else:
+            color = PALETTE[i % len(PALETTE)]
         qp    = exp["query_points"]
         mean  = exp["mean_auc"]
         std   = exp["std_auc"]
@@ -226,6 +238,7 @@ def plot_mp_count_comparison(
     show_trials: bool = False,
     figsize: tuple[float, float] = (12, 7),
     title: str = "Queried MP Count Comparison",
+    cmap_runs: str | None = None,
 ) -> None:
     """Plot MP count curves for all experiments that have MP data."""
 
@@ -236,10 +249,18 @@ def plot_mp_count_comparison(
 
     fig, ax = plt.subplots(figsize=figsize)
 
+    if cmap_runs == "none":
+        cmap_runs = None
+
+    n_exps = len(experiments)
     for i, (exp, label) in enumerate(zip(experiments, labels)):
         if not exp.get("has_mp_data"):
             continue
-        color = PALETTE[i % len(PALETTE)]
+        if cmap_runs:
+            val = i / max(1, n_exps - 1)
+            color = plt.get_cmap(cmap_runs)(val)
+        else:
+            color = PALETTE[i % len(PALETTE)]
         qp    = exp["query_points"]
         mean  = exp["mean_mp_count"]
         std   = exp["std_mp_count"]
@@ -330,6 +351,14 @@ def parse_args() -> argparse.Namespace:
         metavar="DIR",
         help="Root directory for auto-discovery mode (default: current directory).",
     )
+    p.add_argument(
+        "--cmap-runs",
+        default="coolwarm",
+        metavar="CMAP",
+        help="Use a continuous Matplotlib colormap (e.g., viridis, plasma, coolwarm) "
+             "to color the different experiment lines smoothly. Perfect for parameter sweeps. "
+             "Use 'none' to disable and use the discrete color palette (default: coolwarm).",
+    )
     return p.parse_args()
 
 
@@ -391,6 +420,7 @@ def main() -> None:
         show_trials=args.show_trials,
         figsize=tuple(args.figsize),
         title=args.title,
+        cmap_runs=args.cmap_runs,
     )
 
     # 5. Plot MP count comparison (auto-generated alongside AUC plot)
@@ -403,6 +433,7 @@ def main() -> None:
         out_path=mp_out,
         show_trials=args.show_trials,
         figsize=tuple(args.figsize),
+        cmap_runs=args.cmap_runs,
     )
 
 

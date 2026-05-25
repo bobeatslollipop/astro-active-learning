@@ -20,7 +20,7 @@ SOFT_TOPK=20
 SOFTMAX_POOL=100000
 
 # ── Lambda geometrically sweep: 0.1, 1, 10, 100 ──
-LAMBDAS=(300)
+LAMBDAS=(3000 10000 30000)
 
 for lambda in "${LAMBDAS[@]}"; do
   out_dir="l2_sweep_results/al_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"

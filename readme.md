@@ -179,7 +179,7 @@ Outputs (in `--out-dir`): `results.json`, `final_weights.csv`, `params.json`, `l
 
 ```bash
 # Auto-discover all experiment subdirectories that contain auc_trials.json
-python compare_auc_trials.py --base-dir l2_sweep_results/
+python compare_auc_trials.py --base-dir presentation_runs/ --cmap-runs viridis
 
 
 # Compare a specific subset, with custom legend labels and output file
