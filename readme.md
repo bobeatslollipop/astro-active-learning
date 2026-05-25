@@ -4,8 +4,8 @@
 
 This project implements an active learning framework for stellar classification, focusing on identifying metal-poor stars from imbalanced and biased datasets.
 
-*   **`active_learning.py`**: The core active learning loop. It supports query strategies (`random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `entropicOT`, `kmedianpp`) and dataset-shift reweighting (`none`, `hard`, `soft`, `l2`, `kl`).
-*   **`run_experiments.sh`, `run_l2_sweep.sh`**: Shell scripts for batch active-learning runs and L2 reweighting sweeps.
+*   **`active_learning.py`**: The core active learning loop. It supports query strategies (`random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `entropicOT`, `kmedianpp`, `moment_matching`), final models (`logistic`, `ridge`), and dataset-shift reweighting (`none`, `hard`, `soft`, `l2`, `kl`).
+*   **`run_experiments.sh`, `run_l2_sweep.sh`, `run_moment_sweep.sh`**: Shell scripts for batch active-learning runs, L2 reweighting sweeps, and linear moment-matching sweeps.
 *   **`linear_classifier.py`, `linear_regression.py`, `two_layers.py`**: Baseline model training scripts (logistic regression, linear regression, and a 2-layer neural network) for training on fixed datasets.
 *   **`compare_auc_trials.py`**: A plotting utility to compare PR-AUC learning curves across multiple active learning runs.
 *   **`visualize_embedding.py`, `visualize_feh_dist.py`**: Utilities for UMAP/t-SNE embedding visualizations and plotting metallicity ([Fe/H]) distributions.
@@ -100,7 +100,7 @@ Visualize high-dimensional BP/RP embeddings using UMAP, t-SNE, or PCA, colored b
 
 ## Active Learning (Warm Start)
 
-Trains a logistic regression classifier via active learning, starting from a biased initial set (e.g. low-$T_{\rm eff}$ stars) and iteratively querying the full population.
+Trains a classifier via active learning, starting from a biased initial set (e.g. low-$T_{\rm eff}$ stars) and iteratively querying the full population. The default final model is logistic regression; `--model ridge` uses regularized linear regression as a classifier.
 
 ```bash
 CUDA_VISIBLE_DEVICES=1
@@ -110,6 +110,7 @@ python active_learning.py \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
   --strategy        wasserstein \
+  --model           logistic \
   --reweighting     l2 \
   --reweight-lambda 3000 \
   --softmax-pool-size 100000 \
@@ -149,11 +150,13 @@ Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR
 | `--warm-start-file` | `bp_rp_lamost_normalized_low_teff.h5` | H5 file for the biased warm-start set. |
 | `--full-data-file` | `bp_rp_lamost_normalized.h5` | H5 file for the full population (pool + eval). |
 | `--feh-threshold` | `-2.0` | Fe/H cut: < threshold → MP (0), ≥ threshold → MR (1). |
-| `--strategy` | `uncertainty` | Query strategy: `random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `entropicOT`, `kmedianpp`. |
+| `--strategy` | `uncertainty` | Query strategy: `random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `entropicOT`, `kmedianpp`, `moment_matching`. |
 | `--total-queries` | `3000` | Total points to query from the pool. |
 | `--eval-every` | `200` | Retrain and evaluate every k queries. |
+| `--model` | `logistic` | Final classifier: `logistic` or `ridge`. |
 | `--lambda-MP` | `1.0` | Desired total-weight ratio MP/MR. Per-sample weights auto-scale: $w_{MP} = \lambda \cdot n_{MR}/n_{MP}$. |
 | `--C` | `1.0` | Inverse L2 regularisation strength for the logistic regression classifier. Larger values mean weaker classifier regularization. |
+| `--ridge-alpha` | `1.0` | L2 regularization strength for `--model ridge`. Larger values mean stronger ridge regularization. |
 | `--reweighting` | `none` | Covariate-shift correction: `none`=uniform weights, `hard`=hard Voronoi weights, `soft`=temperature softmin weights, `l2`=L2-regularized Wasserstein final weights, `kl`=KL-regularized Wasserstein final weights. |
 | `--reweight-lambda` | `1.0` | Regularization strength for `l2` and `kl` reweighting. Larger values produce less concentrated final weights. |
 | `--l2-max-iter-warm` | `15` | Maximum LBFGS iterations for `l2`/`kl` reweighting at each snapshot. |
@@ -165,6 +168,7 @@ Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR
 | `--pool-max` | `None` | Cap full-population size (subsampled if exceeded). |
 | `--wass-pool-size` | `50000` | Subpool size for `wasserstein` and `entropicOT` query planning. |
 | `--eot-temperature` | `1.0` | Temperature for `entropicOT` query planning. Smaller values approach hard Wasserstein selection. |
+| `--moment-ridge` | `1.0` | Ridge regularization used inside the `moment_matching` query objective. |
 | `--n-trials` | `1` | Number of independent trials. Multi-trial runs save mean/std PR-AUC summaries. |
 | `--n-snapshots` | `3` | Number of evenly spaced PR-AUC snapshot points. |
 | `--seed` | `42` | Random seed. |
@@ -182,6 +186,7 @@ Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR
 | `wasserstein` | Greedy core-set: maximise coverage of the full population. |
 | `entropicOT` | Entropic optimal-transport variant of Wasserstein-style coverage. |
 | `kmedianpp` | k-median++ style geometric coverage baseline. |
+| `moment_matching` | Greedy ridge linear-design selection that reduces target second-moment prediction discrepancy. |
 
 ### Reweighting Methods
 

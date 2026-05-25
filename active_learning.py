@@ -917,6 +917,79 @@ def _query_kmedianpp_numpy(X_pool, n, rng, X_labeled, state):
     return np.array(chosen, dtype=np.intp)
 
 
+def query_moment_matching(X_pool, clf, n, rng, *, X_labeled=None, state=None,
+                          pool_size=50000, moment_ridge=1.0, **kw):
+    """Greedy ridge moment/design matching for linear-regression experiments.
+
+    On a random target subpool T, approximate the linear prediction-design
+    objective tr(M_T G^{-1}), where M_T is the target second moment and
+    G is the ridge-regularized labeled design matrix. Each greedy step
+    selects the candidate with the largest Sherman-Morrison reduction in
+    this objective.
+    """
+    n_pool = len(X_pool)
+    n_pick = min(n, n_pool)
+    if n_pick <= 0:
+        return np.empty(0, dtype=np.intp)
+
+    if pool_size is None:
+        effective_ps = n_pool
+    else:
+        effective_ps = min(n_pool, max(n_pick, int(pool_size)))
+
+    subpool_idx = rng.choice(n_pool, effective_ps, replace=False)
+    T = X_pool[subpool_idx].astype(np.float64, copy=False)
+
+    chosen = _moment_matching_greedy(T, X_labeled, n_pick, moment_ridge)
+    return subpool_idx[np.array(chosen, dtype=np.intp)]
+
+
+def _moment_matching_greedy(T, X_labeled, n_pick, moment_ridge):
+    ps, d = T.shape
+    ridge = max(float(moment_ridge), 1e-12)
+    print(f"  [Moment] pool_size={ps}, ridge={ridge:g}, selecting {n_pick}")
+
+    M_target = (T.T @ T) / max(ps, 1)
+    G = ridge * np.eye(d, dtype=np.float64)
+    if X_labeled is not None and len(X_labeled) > 0:
+        X_l = np.asarray(X_labeled, dtype=np.float64)
+        G += X_l.T @ X_l
+
+    try:
+        G_inv = np.linalg.inv(G)
+    except np.linalg.LinAlgError:
+        G_inv = np.linalg.pinv(G)
+
+    chosen = []
+    available = np.ones(ps, dtype=bool)
+
+    for _ in range(min(n_pick, ps)):
+        # Reduction in tr(M G^{-1}) from adding x x^T:
+        #   (x^T G^{-1} M G^{-1} x) / (1 + x^T G^{-1} x)
+        design_gain = G_inv @ M_target @ G_inv
+        T_gain = T @ design_gain
+        T_inv = T @ G_inv
+        numer = np.einsum("ij,ij->i", T_gain, T)
+        denom = 1.0 + np.einsum("ij,ij->i", T_inv, T)
+        scores = numer / np.maximum(denom, 1e-12)
+        scores[~available] = -np.inf
+
+        best = int(np.argmax(scores))
+        if not np.isfinite(scores[best]):
+            break
+
+        chosen.append(best)
+        available[best] = False
+
+        x = T[best]
+        G_inv_x = G_inv @ x
+        update_denom = 1.0 + float(x @ G_inv_x)
+        if update_denom > 1e-12:
+            G_inv -= np.outer(G_inv_x, G_inv_x) / update_denom
+
+    return chosen
+
+
 # ── Voronoi Reweighting (for wasserstein_weighted) ───────
 
 def compute_voronoi_weights(X_pool, X_labeled, voronoi_state=None):
@@ -1794,40 +1867,27 @@ STRATEGIES = {
     "wasserstein": query_wasserstein,
     "entropicOT": query_entropicOT,
     "kmedianpp": query_kmedianpp,
+    "moment_matching": query_moment_matching,
     "purely_random": query_purely_random,
 }
 
 
 # ── Training & Evaluation ────────────────────────────────
 
-def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None):
-    """Train logistic regression with guaranteed class weight totals.
+TRAIN_WEIGHT_SUM = 10_000.0
 
-    Regardless of the per-sample weights provided (e.g. Voronoi weights),
-    the final training weights are rescaled in two steps:
 
-    1. **Class-ratio lock**: MP weights are scaled to sum to lambda_MP,
-       MR weights to 1.0.  Within each class, relative Voronoi weights
-       are preserved.
-    2. **Global normalisation**: all weights are uniformly rescaled so
-       that sum(weights) == 1.0.  This makes the data-fit term O(1)
-       regardless of dataset size, so C has a stable, consistent
-       meaning throughout the active-learning loop (n_labeled grows
-       from warm-start size to warm-start + all queries).
-
-    If prev_clf is given, its coefficients are used to warm-start LBFGS
-    so that convergence takes only a few iterations.
-    """
+def _class_ratio_sample_weights(y, lambda_MP=1.0, sample_weight=None,
+                                target_sum=TRAIN_WEIGHT_SUM):
+    """Apply MP/MR total-weight locking while preserving within-class weights."""
     n_MP, n_MR = int(np.sum(y == 0)), int(np.sum(y == 1))
 
-    # Start from per-sample base weights
     if sample_weight is not None:
         sw = np.array(sample_weight, dtype=np.float64)
     else:
         sw = np.ones(len(y), dtype=np.float64)
 
-    # Step 1: Rescale each class so totals are exactly lambda_MP (MP) and 1.0 (MR)
-    final_w = np.empty_like(sw)
+    final_w = np.zeros_like(sw)
     mp_mask = (y == 0)
     mr_mask = (y == 1)
 
@@ -1839,18 +1899,40 @@ def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None
         sum_mr = sw[mr_mask].sum()
         final_w[mr_mask] = sw[mr_mask] * (1.0 / sum_mr) if sum_mr > 0 else 1.0 / n_MR
 
-    # Step 2: Normalise so sum(final_w) == 1.0.
+    total_w = final_w.sum()
+    if total_w > 0:
+        final_w *= (target_sum / total_w)
+    return final_w
+
+
+def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None):
+    """Train logistic regression with guaranteed class weight totals.
+
+    Regardless of the per-sample weights provided (e.g. Voronoi weights),
+    the final training weights are rescaled in two steps:
+
+    1. **Class-ratio lock**: MP weights are scaled to sum to lambda_MP,
+       MR weights to 1.0.  Within each class, relative Voronoi weights
+       are preserved.
+    2. **Global normalisation**: all weights are uniformly rescaled to a
+       fixed total. This makes the data-fit term comparable across snapshots,
+       so C has a stable, consistent
+       meaning throughout the active-learning loop (n_labeled grows
+       from warm-start size to warm-start + all queries).
+
+    If prev_clf is given, its coefficients are used to warm-start LBFGS
+    so that convergence takes only a few iterations.
+    """
+    # Step 2: Normalise to a fixed total.
     # The sklearn objective is: sum_i(w_i * loss_i) + (1/2C)*||coef||^2
     # sklearn does NOT normalise sample_weight internally, so sum(w_i) sets
     # the scale of the data-fit term.  In active learning n_labeled grows
     # over time; if we normalised to n_labeled the fit term would grow with
     # every snapshot, making C effectively weaker and weaker.  Normalising
-    # to 1.0 keeps the data-fit term O(1) throughout — C then has a fixed,
+    # to a fixed total keeps the data-fit term comparable throughout — C then has a fixed,
     # dataset-size-independent meaning.  The class ratio and within-class
     # Voronoi corrections are unaffected (we only multiply by a scalar).
-    total_w = final_w.sum()
-    if total_w > 0:
-        final_w *= (10_000.0 / total_w)  # sum → 10_000 (fixed constant, dataset-size-independent)
+    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight)
 
     clf = LogisticRegression(C=C, solver="lbfgs", max_iter=2000,
                              warm_start=True)
@@ -1861,6 +1943,52 @@ def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None
         clf.classes_ = prev_clf.classes_.copy()
     clf.fit(X, y, sample_weight=final_w)
     return clf
+
+
+class RidgeRegressionClassifier:
+    """Ridge regression used as a binary classifier with MP as the low score."""
+
+    def __init__(self, coef, intercept):
+        self.coef_ = np.asarray(coef, dtype=np.float64).reshape(1, -1)
+        self.intercept_ = np.asarray([intercept], dtype=np.float64)
+        self.classes_ = np.array([0, 1], dtype=np.int32)
+
+    def decision_function(self, X):
+        return np.asarray(X) @ self.coef_.ravel() + self.intercept_[0]
+
+    def predict(self, X):
+        # y=0 is MP, y=1 is MR. The ridge target is -1 for MP and +1 for MR.
+        return (self.decision_function(X) >= 0.0).astype(np.int32)
+
+    def predict_proba(self, X):
+        scores = np.clip(self.decision_function(X), -50.0, 50.0)
+        p_mr = 1.0 / (1.0 + np.exp(-scores))
+        return np.column_stack([1.0 - p_mr, p_mr])
+
+
+def train_ridge_classifier(X, y, lambda_MP=1.0, alpha=1.0, sample_weight=None):
+    """Train weighted ridge regression on targets MP=-1, MR=+1."""
+    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight)
+    X = np.asarray(X, dtype=np.float64)
+    target = np.where(y == 0, -1.0, 1.0).astype(np.float64)
+
+    X_pad = np.column_stack([X, np.ones(len(X), dtype=np.float64)])
+    sqrt_w = np.sqrt(final_w)[:, None]
+    Xw = X_pad * sqrt_w
+    yw = target[:, None] * sqrt_w
+
+    gram = Xw.T @ Xw
+    rhs = Xw.T @ yw
+    reg = max(float(alpha), 0.0) * np.eye(X_pad.shape[1], dtype=np.float64)
+    reg[-1, -1] = 0.0
+    gram += reg
+
+    try:
+        sol = np.linalg.solve(gram, rhs).ravel()
+    except np.linalg.LinAlgError:
+        sol = (np.linalg.pinv(gram) @ rhs).ravel()
+
+    return RidgeRegressionClassifier(sol[:-1], sol[-1])
 
 
 def evaluate(clf, X, y):
@@ -2282,8 +2410,15 @@ def run_active_learning(args):
             final_sw = sw
 
             train_t0 = time.perf_counter()
-            clf = train_logistic(Xl, yl, args.lambda_MP, args.C, prev_clf=prev_clf,
-                                 sample_weight=sw)
+            if args.model == "logistic":
+                clf = train_logistic(Xl, yl, args.lambda_MP, args.C,
+                                     prev_clf=prev_clf, sample_weight=sw)
+            elif args.model == "ridge":
+                clf = train_ridge_classifier(Xl, yl, args.lambda_MP,
+                                             alpha=args.ridge_alpha,
+                                             sample_weight=sw)
+            else:
+                raise ValueError(f"Unknown model: {args.model}")
             _timing("Classifier train", train_t0)
 
             eval_t0 = time.perf_counter()
@@ -2332,7 +2467,8 @@ def run_active_learning(args):
                 sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
                                   X_labeled=X_labeled[:n_labeled], state=strategy_state,
                                   pool_size=args.wass_pool_size,
-                                  temperature=args.eot_temperature)
+                                  temperature=args.eot_temperature,
+                                  moment_ridge=args.moment_ridge)
                 pool_idx = avail_idx[sel]
 
             _timing(f"{args.strategy} query selection", query_t0)
@@ -2464,8 +2600,12 @@ def main():
     a("--eval-every",     type=int, default=200,  help="Retrain & evaluate every k queries.")
 
     # Model
+    a("--model", default="logistic", choices=["logistic", "ridge"],
+      help="Final classifier: logistic regression or ridge-regression classifier.")
     a("--lambda-MP", type=float, default=1.0, help="Desired total-weight ratio MP/MR. Per-sample weights are auto-scaled so n_MP*w_MP / n_MR*w_MR = lambda_MP.")
     a("--C",         type=float, default=1.0, help="Inverse regularisation strength.")
+    a("--ridge-alpha", type=float, default=1.0,
+      help="L2 regularisation strength for --model=ridge. Larger values mean stronger ridge regularization.")
     a("--reweighting", default="none", choices=["none", "hard", "soft", "l2", "kl"],
        help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, l2/kl=final-weight regularized Wasserstein distance.")
     a("--reweight-lambda", type=float, default=1.0,
@@ -2488,6 +2628,8 @@ def main():
     a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein / entropicOT strategy. Brute-force search is O(n × pool_size²).")
     a("--eot-temperature", type=float, default=1.0,
        help="Temperature τ for entropicOT query strategy. τ→0 = hard Wasserstein, τ→∞ = uniform. Only used when --strategy=entropicOT.")
+    a("--moment-ridge", type=float, default=1.0,
+      help="Ridge regularization used by the moment_matching query strategy.")
     a("--n-trials",        type=int, default=1,       help="Number of independent trials.  When > 1, a mean±std PR-AUC plot is generated.")
     a("--n-snapshots",     type=int, default=3,       help="Number of evenly-spaced AUC measurement points.  total_queries must be divisible by n_snapshots × eval_every (default: 3×200=600 divides 3000).")
     a("--seed",            type=int, default=42)
