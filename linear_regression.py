@@ -209,10 +209,8 @@ def main():
     p_add('--data-split', type=str, default='random', choices=['random', 'low_temp'], help="Which dataset split to use. Defaults to 'random'.")
     p_add('--train-file', type=str, default=None, help="Path to train H5 file. Overrides --data-split.")
     p_add('--test-file', type=str, default=None, help="Path to test H5 file. Overrides --data-split.")
-    p_add('--hidden-dim', type=int, default=2, help="Hidden dimension (currently unused).")
-    p_add('--optimizer', type=str, default='adam', choices=['adam', 'sgd', 'exact'], help="Optimizer type: 'adam', 'sgd', or 'exact' (for OLS/Ridge exact solve).")
+    p_add('--optimizer', type=str, default='adam', choices=['adam', 'exact'], help="Optimizer type: 'adam' or 'exact' (for OLS/Ridge exact solve).")
     p_add('--lr', type=float, default=1e-3, help="Initial learning rate.")
-    p_add('--momentum', type=float, default=0.0, help="Momentum factor for SGD optimizer. Ignored if --optimizer=adam.")
     p_add('--weight-decay', type=float, default=0.0, help="Weight decay factor for L2 regularization.")
     p_add('--epochs', type=int, default=50, help="Number of training epochs.")
     p_add('--batch-size', type=int, default=30000, help="Batch size for training.")
@@ -379,13 +377,6 @@ def main():
         optimizer = optim.Adam(
             model.parameters(),
             lr=args.lr,
-            weight_decay=args.weight_decay,
-        )
-    elif args.optimizer == 'sgd':
-        optimizer = optim.SGD(
-            model.parameters(),
-            lr=args.lr,
-            momentum=args.momentum,
             weight_decay=args.weight_decay,
         )
     else:

@@ -112,9 +112,7 @@ def main():
     p_add('--test-file', type=str, default=None, help="Path to test H5 file. Overrides --data-split.")
     p_add('--feh-threshold', type=float, default=-2.0, help="[Fe/H] threshold defining the boundary between MP and MR classes.")
     p_add('--hidden-size', type=int, default=16, help="Hidden dimension size for the two layer network.")
-    p_add('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help="Optimizer type: 'adam' or 'sgd'.")
     p_add('--lr', type=float, default=1.0, help="Initial learning rate.")
-    p_add('--momentum', type=float, default=0.0, help="Momentum factor for SGD optimizer. Ignored if --optimizer=adam.")
     p_add('--weight-decay', type=float, default=0.0, help="Weight decay factor for L2 regularization.")
     p_add('--epochs', type=int, default=50, help="Number of training epochs.")
     p_add('--batch-size', type=int, default=30000, help="Batch size for training.")
@@ -277,19 +275,11 @@ def main():
     w_mp = args.lambda_MP / (1.0 + args.lambda_MP)
     criterion = nn.BCEWithLogitsLoss(reduction='none')
 
-    if args.optimizer == 'adam':
-        optimizer = optim.Adam(
-            model.parameters(),
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-        )
-    else:
-        optimizer = optim.SGD(
-            model.parameters(),
-            lr=args.lr,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay,
-        )
+    optimizer = optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
 
     from torch.utils.data import TensorDataset, DataLoader
 

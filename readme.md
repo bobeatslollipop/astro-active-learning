@@ -13,90 +13,39 @@ This project implements an active learning framework for stellar classification,
 *   **`experiment_results_100/`, `experiment_results_6k/`**: Output directories containing logs, weights, and plots from active learning experiments.
 *   **`random_training/`, `low_temp_training/`**: Scripts and data splits for baseline model training.
 
-## Dataset Generation
-Before training, you need to generate the split training and testing datasets.
+## Dataset Preparation
+
+Active-learning runs use `bp_rp_lamost_normalized.h5` and the biased warm-start file `bp_rp_lamost_normalized_low_teff.h5`. For fixed-dataset baseline scripts, generate a random train/test split with:
+
 ```bash
 cd random_training
 python generate_dataset.py --seed 42 --file-path ../bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1
 cd ..
 ```
 
-```powershell
-cd random_training
-python generate_dataset.py --seed 42 --file-path ../bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1
-cd ..
-```
 This generates `random_train_set.h5` and `random_test_set.h5` inside the `random_training` folder.
 
-## Training Linear Classifier
-To train the model:
+## Optional Fixed-Dataset Baselines
+
+These scripts are secondary baselines. The main experiment interface is `active_learning.py`.
+
 ```bash
-python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer irls --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 0.1 --weight-decay 0.0 --momentum 0.0 --data-split random
-
-python3 linear_regression.py --run-name weight_0.3 --seed 42 --optimizer exact --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random --low-feh-weight 0.3 --cutoff 10 --feh-threshold -2.0
+python linear_classifier.py --run-name default_run --data-split random --optimizer irls --lambda-MP 0.1 --weight-decay 0.0 --feh-threshold -2.0
+python3 linear_regression.py --run-name ridge_baseline --data-split random --optimizer exact --weight-decay 1.0 --low-feh-weight 0.3 --feh-threshold -2.0
 ```
 
-```powershell
-python linear_classifier.py --run-name default_run --seed 42 --feh-threshold -2.0 --optimizer irls --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --lambda-MP 0.1 --weight-decay 0.0 --momentum 0.0 --data-split random
+`linear_classifier.py` supports `--optimizer adam|irls`; `linear_regression.py` supports `--optimizer adam|exact`, where `exact + --weight-decay` is ridge regression. `two_layers.py` remains an Adam-only neural baseline.
 
-python3 linear_regression.py --run-name weight_0.3 --seed 42 --optimizer exact --lr 1.0 --epochs 500 --batch-size 30000 --lr-end-factor 1.0 --weight-decay 0.0 --momentum 0.0 --data-split random --low-feh-weight 0.3 --cutoff 10 --feh-threshold -2.0
-```
-
-All outputs (weights, loss plots, and evaluation confusion matrices) will be saved in the `linear_{run_name}` directory.
-
-### Available Training Arguments
-
-| Argument | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--run-name` | `str` | `None` | Name of the run. Outputs will be saved to `linear_{run_name}/`. |
-| `--data-split` | `str` | `random` | Semantic name for the dataset split. Triggers auto-discovery of H5 files. (See below) |
-| `--train-file` | `str` | `None` | Path to custom train H5 file. Overrides `--data-split`. |
-| `--test-file`| `str` | `None` | Path to custom test H5 file. Overrides `--data-split`. |
-| `--lambda-MP` | `float` | `2.0` | Reweight factor for Metal-Poor (MP) class. MP weight = $\lambda_{MP} / (1+\lambda_{MP})$, MR weight = $1/(1+\lambda_{MP})$. |
-| `--feh-threshold` | `float` | `-2.0` | [Fe/H] threshold defining the boundary between MP and MR classes. |
-| `--seed` | `int` | `42` | Random seed for reproducibility. |
-| `--optimizer` | `str` | `adam` | Optimizer to use: `adam`, `sgd`, or `irls` (Iteratively Reweighted Least Squares). |
-| `--lr` | `float` | `1.0` | Initial learning rate. |
-| `--lr-end-factor`| `float` | `1.0` | Final learning rate multiplier (linear scheduler). |
-| `--epochs` | `int` | `500` | Number of training epochs. |
-| `--batch-size` | `int` | `30000` | Batch size for training. |
-| `--weight-decay` | `float` | `0.0` | Weight decay factor for L2 regularization. |
-| `--momentum` | `float` | `0.0` | Momentum factor for SGD optimizer. Ignored if `--optimizer=adam`. |
-| `--low-feh-weight` | `float` | `1.0` | Regression only: Weight multiplier for samples with true Fe/H < -2.0. |
-| `--cutoff` | `float` | `None` | Regression only: Exclude star properties whose target Fe/H is strictly greater than this value during both training and evaluation. |
-
-### Embedding Visualization
+## Embedding Visualization
 
 Visualize high-dimensional BP/RP embeddings using UMAP, t-SNE, or PCA, colored by metallicity ([Fe/H]).
 
-- **Standard Heatmap**: Randomly samples data and displays a continuous color gradient.
-  ```bash
-  python visualize_embedding.py --method umap
-  ```
-  ```powershell
-  python visualize_embedding.py --method umap
-  ```
-- **Balanced Classification**: Use `--threshold` to enable balanced sampling (ensuring rare metal-poor stars are well-represented) and display binary Red/Blue classes.
-  ```bash
-  python visualize_embedding.py --method umap --threshold -2.0
-  ```
-  ```powershell
-  python visualize_embedding.py --method umap --threshold -2.0
-  ```
-- **Balanced Heatmap**: Use both `--threshold` and `--continuous` to combine balanced sampling with a continuous color gradient.
-  ```bash
-  python visualize_embedding.py --method umap --threshold -2.0 --continuous
-  ```
-  ```powershell
-  python visualize_embedding.py --method umap --threshold -2.0 --continuous
-  ```
-- **Error Diagnosis and Decision Boundary**: Use `--eval_weights <path_to_csv>` to overlay classification errors (false positives/negatives) as large triangles on the plot, and draw the linear classifier's decision boundary (`Logit = 0`).
-  ```bash
-  python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
-  ```
-  ```powershell
-  python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
-  ```
+```bash
+python visualize_embedding.py --method umap
+python visualize_embedding.py --method umap --threshold -2.0
+python visualize_embedding.py --method umap --threshold -2.0 --continuous
+python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
+```
 
 ## Active Learning (Warm Start)
 
@@ -124,21 +73,6 @@ python active_learning.py \
   --n-trials        16 \
   --n-snapshots     10 \
   --out-dir         al_wasserstein_l2_100_lambda_3000
-```
-
-```powershell
-python active_learning.py `
-  --warm-start-file bp_rp_lamost_normalized_low_teff.h5 `
-  --full-data-file  bp_rp_lamost_normalized.h5 `
-  --feh-threshold   -2.0 `
-  --strategy        wasserstein `
-  --total-queries   20000 `
-  --eval-every      500 `
-  --lambda-MP       0.05 `
-  --C               100.0 `
-  --eval-size       200000 `
-  --seed            42 `
-  --out-dir         al_wasserstein
 ```
 
 Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR curves, weight-distribution plots for reweighted runs, and multi-trial summaries such as `auc_trials.json`/`auc_trials.png` when `--n-trials > 1`.
