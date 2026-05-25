@@ -918,7 +918,8 @@ def _query_kmedianpp_numpy(X_pool, n, rng, X_labeled, state):
 
 
 def query_moment_matching(X_pool, clf, n, rng, *, X_labeled=None, state=None,
-                          pool_size=50000, moment_ridge=1.0, **kw):
+                          pool_size=50000, moment_ridge=1.0,
+                          sample_weight=None, **kw):
     """Greedy ridge moment/design matching for linear-regression experiments.
 
     On a random target subpool T, approximate the linear prediction-design
@@ -940,11 +941,12 @@ def query_moment_matching(X_pool, clf, n, rng, *, X_labeled=None, state=None,
     subpool_idx = rng.choice(n_pool, effective_ps, replace=False)
     T = X_pool[subpool_idx].astype(np.float64, copy=False)
 
-    chosen = _moment_matching_greedy(T, X_labeled, n_pick, moment_ridge)
+    chosen = _moment_matching_greedy(T, X_labeled, n_pick, moment_ridge,
+                                     labeled_weight=sample_weight)
     return subpool_idx[np.array(chosen, dtype=np.intp)]
 
 
-def _moment_matching_greedy(T, X_labeled, n_pick, moment_ridge):
+def _moment_matching_greedy(T, X_labeled, n_pick, moment_ridge, labeled_weight=None):
     ps, d = T.shape
     ridge = max(float(moment_ridge), 1e-12)
     print(f"  [Moment] pool_size={ps}, ridge={ridge:g}, selecting {n_pick}")
@@ -953,7 +955,20 @@ def _moment_matching_greedy(T, X_labeled, n_pick, moment_ridge):
     G = ridge * np.eye(d, dtype=np.float64)
     if X_labeled is not None and len(X_labeled) > 0:
         X_l = np.asarray(X_labeled, dtype=np.float64)
-        G += X_l.T @ X_l
+        if labeled_weight is None:
+            G += X_l.T @ X_l
+        else:
+            w = np.asarray(labeled_weight, dtype=np.float64)
+            if len(w) != len(X_l):
+                raise ValueError("labeled_weight must have one entry per labeled point.")
+            w_sum = float(w.sum())
+            if w_sum <= 0:
+                w = np.ones(len(X_l), dtype=np.float64)
+                w_sum = float(len(X_l))
+            # Keep the weighted source design on the same scale as an
+            # unweighted design with len(X_l) labeled observations.
+            w = np.maximum(w, 0.0) / w_sum * len(X_l)
+            G += X_l.T @ (w[:, None] * X_l)
 
     try:
         G_inv = np.linalg.inv(G)
@@ -1447,8 +1462,8 @@ def _soft_voronoi_numpy(X_pool, X_labeled, temperature, topk=0):
     return weights
 
 
-def _l2_chunk_size_torch(n_pool, n_labeled, device):
-    """Choose a CUDA chunk size for L2 reweighting distance blocks."""
+def _distance_chunk_size_torch(n_pool, n_labeled, device):
+    """Choose a CUDA chunk size for distance-based reweighting blocks."""
     import torch
     try:
         free_bytes, _ = torch.cuda.mem_get_info(device)
@@ -1460,7 +1475,7 @@ def _l2_chunk_size_torch(n_pool, n_labeled, device):
         return max(1, min(n_pool, max_elements // max(n_labeled, 1)))
 
 
-def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_iter=15):
+def compute_voronoi_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_iter=15):
     """Compute optimal sample weights for labeled points that minimize
     W_1(Uniform(pool), Weighted(labeled)) + lambda * ||w||_2^2.
 
@@ -1477,17 +1492,17 @@ def compute_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_i
     try:
         import torch
         if torch.cuda.is_available():
-            return _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter)
+            return _voronoi_l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter)
     except ImportError:
         pass
 
-    return _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter)
+    return _voronoi_l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter)
 
 
-def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
+def _voronoi_l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
     import torch
     
-    class L2ReweightFunction(torch.autograd.Function):
+    class VoronoiL2ReweightFunction(torch.autograd.Function):
         @staticmethod
         def forward(ctx, z, X_pool_t, X_labeled_t, X_pool_sq, X_labeled_sq, reweight_lambda_val, chunk_size):
             n_pool = len(X_pool_t)
@@ -1563,13 +1578,13 @@ def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
         state['X_pool_t'] = X_p
         state['X_pool_sq'] = X_pool_sq
         state['pool_cache_id'] = pool_cache_id
-        print(f"    [L2] Cached pool tensor on GPU: {n_pool} x {X_p.shape[1]}")
+        print(f"    [Voronoi-L2] Cached pool tensor on GPU: {n_pool} x {X_p.shape[1]}")
 
     X_l = torch.as_tensor(X_labeled, dtype=torch.float32, device=device).contiguous()
     X_labeled_sq = torch.sum(X_l ** 2, dim=1)
 
-    chunk_size = _l2_chunk_size_torch(n_pool, n_labeled, device)
-    print(f"    [L2] CUDA chunk size: {chunk_size} pool rows x {n_labeled} labeled")
+    chunk_size = _distance_chunk_size_torch(n_pool, n_labeled, device)
+    print(f"    [Voronoi-L2] CUDA chunk size: {chunk_size} pool rows x {n_labeled} labeled")
 
     optimizer = torch.optim.LBFGS([z], lr=1.0, max_iter=max_iter,
                                   history_size=10, tolerance_grad=1e-5,
@@ -1577,7 +1592,7 @@ def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
 
     def closure():
         optimizer.zero_grad()
-        loss = L2ReweightFunction.apply(z, X_p, X_l, X_pool_sq, X_labeled_sq, reweight_lambda, chunk_size)
+        loss = VoronoiL2ReweightFunction.apply(z, X_p, X_l, X_pool_sq, X_labeled_sq, reweight_lambda, chunk_size)
         loss.backward()
         return loss
 
@@ -1599,7 +1614,7 @@ def _l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
     return w
 
 
-def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
+def _voronoi_l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
     from scipy.optimize import minimize
 
     n_pool = len(X_pool)
@@ -1662,6 +1677,101 @@ def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
         w = np.ones(n_labeled, dtype=np.float64)
 
     return w
+
+
+def _project_simplex(v):
+    """Project a vector onto {w >= 0, sum(w) = 1}."""
+    v = np.asarray(v, dtype=np.float64)
+    if len(v) == 0:
+        return v
+    u = np.sort(v)[::-1]
+    cssv = np.cumsum(u) - 1.0
+    ind = np.arange(1, len(v) + 1)
+    cond = u - cssv / ind > 0
+    if not np.any(cond):
+        return np.ones_like(v) / len(v)
+    rho = ind[cond][-1]
+    theta = cssv[cond][-1] / rho
+    return np.maximum(v - theta, 0.0)
+
+
+def compute_moment_l2_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None,
+                              max_iter=200):
+    """Feature-only weights for the linear-regression moment objective.
+
+    This is the Section-3/linear-moment analogue of source reweighting:
+
+        min_{a >= 0, sum a = 1}
+            ||M_pool - sum_i a_i x_i x_i^T||_op
+            + lambda * ||a||_2.
+
+    The returned sample weights are rescaled to sum to n_labeled, matching the
+    convention used by the training code.
+    """
+    if state is None:
+        state = {}
+
+    pool_cache_id = (id(X_pool), X_pool.shape, str(X_pool.dtype))
+    X_pool = np.asarray(X_pool, dtype=np.float64)
+    X_labeled = np.asarray(X_labeled, dtype=np.float64)
+    n_labeled = len(X_labeled)
+    if n_labeled == 0:
+        return np.empty(0, dtype=np.float64)
+
+    if state.get("moment_pool_cache_id") == pool_cache_id and "moment_M_pool" in state:
+        M_pool = state["moment_M_pool"]
+    else:
+        M_pool = (X_pool.T @ X_pool) / max(len(X_pool), 1)
+        state["moment_M_pool"] = M_pool
+        state["moment_pool_cache_id"] = pool_cache_id
+
+    prev = state.get("moment_weights_sum1")
+    if prev is not None and len(prev) > 0:
+        a = np.full(n_labeled, 1.0 / n_labeled, dtype=np.float64)
+        n_prev = min(len(prev), n_labeled)
+        a[:n_prev] = np.asarray(prev[:n_prev], dtype=np.float64)
+        a = _project_simplex(a)
+    else:
+        a = np.full(n_labeled, 1.0 / n_labeled, dtype=np.float64)
+
+    lam = max(float(reweight_lambda), 0.0)
+    best_a = a.copy()
+    best_obj = np.inf
+
+    for it in range(max(1, int(max_iter))):
+        M_weighted = X_labeled.T @ (a[:, None] * X_labeled)
+        residual = M_pool - M_weighted
+        eigvals, eigvecs = np.linalg.eigh(residual)
+        j = int(np.argmax(np.abs(eigvals)))
+        eig = float(eigvals[j])
+        spectral = abs(eig)
+        l2 = float(np.linalg.norm(a))
+        obj = spectral + lam * l2
+        if obj < best_obj:
+            best_obj = obj
+            best_a = a.copy()
+
+        sign = 1.0 if eig >= 0 else -1.0
+        v = eigvecs[:, j]
+        xv = X_labeled @ v
+        grad = -sign * (xv ** 2)
+        if lam > 0 and l2 > 1e-12:
+            grad += lam * a / l2
+
+        grad_norm = float(np.linalg.norm(grad))
+        if grad_norm <= 1e-12:
+            break
+        step = 0.5 / (np.sqrt(it + 1.0) * grad_norm)
+        a_next = _project_simplex(a - step * grad)
+        if np.linalg.norm(a_next - a, ord=1) < 1e-7:
+            a = a_next
+            break
+        a = a_next
+
+    state["moment_weights_sum1"] = best_a
+    print(f"    [Moment-L2] op_mismatch={best_obj - lam * np.linalg.norm(best_a):.6g}, "
+          f"l2={np.linalg.norm(best_a):.6g}, nonzero={(best_a > 1e-10).sum()}/{n_labeled}")
+    return best_a * n_labeled
 
 
 def compute_kl_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_iter=15):
@@ -1772,7 +1882,7 @@ def _kl_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
     X_l = torch.as_tensor(X_labeled, dtype=torch.float32, device=device).contiguous()
     X_labeled_sq = torch.sum(X_l ** 2, dim=1)
 
-    chunk_size = _l2_chunk_size_torch(n_pool, n_labeled, device)
+    chunk_size = _distance_chunk_size_torch(n_pool, n_labeled, device)
     print(f"    [KL] CUDA chunk size: {chunk_size} pool rows x {n_labeled} labeled")
 
     optimizer = torch.optim.LBFGS([z], lr=1.0, max_iter=max_iter,
@@ -2341,13 +2451,14 @@ def run_active_learning(args):
         strategy_state = {}
         voronoi_state = {}
         soft_voronoi_state = {}
-        l2_state = {}
+        voronoi_l2_state = {}
         kl_state = {}
+        moment_weight_state = {}
         final_sw = None
 
         # Pre-compute fixed soft-pool subsample for this trial (reused across snapshots
         # so the incremental top-K cache stays valid)
-        if args.reweighting in ("soft", "l2", "kl") and args.softmax_pool_size and args.softmax_pool_size < len(X_pool):
+        if args.reweighting in ("soft", "voronoi_l2", "kl", "moment_l2") and args.softmax_pool_size and args.softmax_pool_size < len(X_pool):
             soft_pool_idx = rng.choice(len(X_pool), args.softmax_pool_size, replace=False)
             X_soft_pool = X_pool[soft_pool_idx]
         else:
@@ -2360,7 +2471,7 @@ def run_active_learning(args):
 
         # Helper: train → evaluate → record → log
         def snapshot(n_queries, prev_clf=None):
-            nonlocal voronoi_state, l2_state, kl_state, final_sw
+            nonlocal voronoi_state, voronoi_l2_state, kl_state, moment_weight_state, final_sw
             Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
             if len(np.unique(yl)) < 2:
                 # Both classes required; skip this checkpoint and keep previous clf.
@@ -2385,15 +2496,15 @@ def run_active_learning(args):
                 sw = compute_soft_voronoi_weights(X_soft_pool, Xl, args.temperature,
                                                    soft_state=soft_voronoi_state,
                                                    topk=args.soft_topk)
-            elif args.reweighting == "l2":
+            elif args.reweighting == "voronoi_l2":
                 reweight_t0 = time.perf_counter()
-                reweight_label = "L2 weights"
-                print(f"  [L2] Computing sample weights (λ={args.reweight_lambda}, "
+                reweight_label = "Voronoi-L2 weights"
+                print(f"  [Voronoi-L2] Computing sample weights (λ={args.reweight_lambda}, "
                       f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
                       f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
-                sw = compute_l2_weights(X_soft_pool, Xl, args.reweight_lambda,
-                                        state=l2_state,
-                                        max_iter=getattr(args, "l2_max_iter_warm", 15))
+                sw = compute_voronoi_l2_weights(X_soft_pool, Xl, args.reweight_lambda,
+                                                state=voronoi_l2_state,
+                                                max_iter=args.voronoi_l2_max_iter)
             elif args.reweighting == "kl":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "KL weights"
@@ -2402,7 +2513,16 @@ def run_active_learning(args):
                       f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
                 sw = compute_kl_weights(X_soft_pool, Xl, args.reweight_lambda,
                                         state=kl_state,
-                                        max_iter=getattr(args, "l2_max_iter_warm", 15))
+                                        max_iter=args.voronoi_l2_max_iter)
+            elif args.reweighting == "moment_l2":
+                reweight_t0 = time.perf_counter()
+                reweight_label = "Moment-L2 weights"
+                print(f"  [Moment-L2] Computing sample weights (λ={args.reweight_lambda}, "
+                      f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
+                      f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
+                sw = compute_moment_l2_weights(X_soft_pool, Xl, args.reweight_lambda,
+                                               state=moment_weight_state,
+                                               max_iter=args.moment_weight_iters)
 
             if reweight_t0 is not None:
                 _timing(reweight_label, reweight_t0)
@@ -2468,7 +2588,8 @@ def run_active_learning(args):
                                   X_labeled=X_labeled[:n_labeled], state=strategy_state,
                                   pool_size=args.wass_pool_size,
                                   temperature=args.eot_temperature,
-                                  moment_ridge=args.moment_ridge)
+                                  moment_ridge=args.moment_ridge,
+                                  sample_weight=final_sw if args.reweighting == "moment_l2" else None)
                 pool_idx = avail_idx[sel]
 
             _timing(f"{args.strategy} query selection", query_t0)
@@ -2606,18 +2727,18 @@ def main():
     a("--C",         type=float, default=1.0, help="Inverse regularisation strength.")
     a("--ridge-alpha", type=float, default=1.0,
       help="L2 regularisation strength for --model=ridge. Larger values mean stronger ridge regularization.")
-    a("--reweighting", default="none", choices=["none", "hard", "soft", "l2", "kl"],
-       help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, l2/kl=final-weight regularized Wasserstein distance.")
+    a("--reweighting", default="none", choices=["none", "hard", "soft", "voronoi_l2", "kl", "moment_l2"],
+       help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, voronoi_l2/kl=regularized Wasserstein final weights, moment_l2=linear second-moment weights.")
     a("--reweight-lambda", type=float, default=1.0,
-       help="Regularisation strength lambda for L2/KL Wasserstein reweighting.")
-    a("--l2-max-iter-warm", type=int, default=15,
-       help="Maximum LBFGS iterations for L2/KL reweighting.")
+       help="Regularisation strength lambda for voronoi_l2, kl, or moment_l2 reweighting.")
+    a("--voronoi-l2-max-iter", type=int, default=15,
+       help="Maximum LBFGS iterations for voronoi_l2/kl reweighting.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
        help="Top-K for soft reweighting. 0=auto (calibrate K per snapshot). Only used when --reweighting=soft.")
     a("--softmax-pool-size", type=int, default=None,
-       help="Subsample pool to this size for soft/L2/KL reweighting. By default (None) uses the full pool. "
+       help="Subsample pool to this size for soft/voronoi_l2/kl/moment_l2 reweighting. By default (None) uses the full pool. "
             "Setting e.g. 500000 computes weights on a 500k subsample instead of the full pool. "
             "Hard reweighting is unaffected.")
 
@@ -2630,6 +2751,8 @@ def main():
        help="Temperature τ for entropicOT query strategy. τ→0 = hard Wasserstein, τ→∞ = uniform. Only used when --strategy=entropicOT.")
     a("--moment-ridge", type=float, default=1.0,
       help="Ridge regularization used by the moment_matching query strategy.")
+    a("--moment-weight-iters", type=int, default=200,
+      help="Projected subgradient iterations for --reweighting=moment_l2.")
     a("--n-trials",        type=int, default=1,       help="Number of independent trials.  When > 1, a mean±std PR-AUC plot is generated.")
     a("--n-snapshots",     type=int, default=3,       help="Number of evenly-spaced AUC measurement points.  total_queries must be divisible by n_snapshots × eval_every (default: 3×200=600 divides 3000).")
     a("--seed",            type=int, default=42)

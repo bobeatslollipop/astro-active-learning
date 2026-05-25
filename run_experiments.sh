@@ -22,9 +22,9 @@ REWEIGHT_LAMBDA=1.0
 
 # ── Experiments: "strategy  reweighting  out_dir" ──
 EXPERIMENTS=(
-  "wasserstein   l2    experiment_results_${TOTAL_QUERIES}/al_wasserstein_l2_${TOTAL_QUERIES}"
-  "kmedianpp     l2    experiment_results_${TOTAL_QUERIES}/al_kmedianpp_l2_${TOTAL_QUERIES}"
-  "random        l2    experiment_results_${TOTAL_QUERIES}/al_random_l2_${TOTAL_QUERIES}"
+  "wasserstein   voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_wasserstein_voronoi_l2_${TOTAL_QUERIES}"
+  "kmedianpp     voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_kmedianpp_voronoi_l2_${TOTAL_QUERIES}"
+  "random        voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_random_voronoi_l2_${TOTAL_QUERIES}"
   # "uncertainty   soft  experiment_results_${TOTAL_QUERIES}/al_uncertainty_soft_${TOTAL_QUERIES}"
 )
 

@@ -19,14 +19,14 @@ N_SNAPSHOTS=10
 SOFT_TOPK=20
 SOFTMAX_POOL=100000
 
-# ── Lambda geometrically sweep: 0.1, 1, 10, 100 ──
+# ── Voronoi-L2 lambda sweep ──
 LAMBDAS=(3000 10000 30000)
 
 for lambda in "${LAMBDAS[@]}"; do
-  out_dir="l2_sweep_results/al_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"
+  out_dir="voronoi_l2_sweep_results/al_wasserstein_voronoi_l2_${TOTAL_QUERIES}_lambda_${lambda}"
   echo ""
   echo "============================================================"
-  echo "  Strategy: wasserstein  |  Reweighting: l2"
+  echo "  Strategy: wasserstein  |  Reweighting: voronoi_l2"
   echo "  Reweight Lambda: ${lambda}"
   echo "  Output:   ${out_dir}"
   echo "============================================================"
@@ -36,7 +36,7 @@ for lambda in "${LAMBDAS[@]}"; do
     --full-data-file  "$FULL_DATA" \
     --feh-threshold   "$FEH_THRESHOLD" \
     --strategy        "wasserstein" \
-    --reweighting     "l2" \
+    --reweighting     "voronoi_l2" \
     --soft-topk       "$SOFT_TOPK" \
     --softmax-pool-size "$SOFTMAX_POOL" \
     --reweight-lambda "$lambda" \

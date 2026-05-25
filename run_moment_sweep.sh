@@ -3,7 +3,7 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES=1
 
-# Shared hyperparameters (same scale as run_l2_sweep.sh)
+# Shared hyperparameters for the linear moment-matching path.
 WARM_START=bp_rp_lamost_normalized_low_teff.h5
 FULL_DATA=bp_rp_lamost_normalized.h5
 FEH_THRESHOLD=-2.0
@@ -19,15 +19,16 @@ N_TRIALS=16
 N_SNAPSHOTS=10
 SOFT_TOPK=20
 SOFTMAX_POOL=100000
-REWEIGHTING=l2
-REWEIGHT_LAMBDA=3000
+REWEIGHTING=moment_l2
+REWEIGHT_LAMBDA=1.0
+MOMENT_WEIGHT_ITERS=200
 MODEL=ridge
 
 # Ridge values for the linear moment/design objective.
 MOMENT_RIDGES=(1 10 100 1000 3000 10000)
 
 for moment_ridge in "${MOMENT_RIDGES[@]}"; do
-  out_dir="moment_sweep_results/al_moment_matching_${MODEL}_${TOTAL_QUERIES}_ridge_${moment_ridge}"
+  out_dir="moment_l2_sweep_results/al_moment_matching_${MODEL}_${TOTAL_QUERIES}_ridge_${moment_ridge}"
   echo ""
   echo "============================================================"
   echo "  Strategy: moment_matching  |  Model: ${MODEL}"
@@ -48,6 +49,7 @@ for moment_ridge in "${MOMENT_RIDGES[@]}"; do
     --soft-topk       "$SOFT_TOPK" \
     --softmax-pool-size "$SOFTMAX_POOL" \
     --reweight-lambda "$REWEIGHT_LAMBDA" \
+    --moment-weight-iters "$MOMENT_WEIGHT_ITERS" \
     --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \
     --lambda-MP       "$LAMBDA_MP" \
