@@ -1591,6 +1591,201 @@ def _l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
     return w
 
 
+def compute_kl_weights(X_pool, X_labeled, reweight_lambda=1.0, state=None, max_iter=15):
+    """Compute sample weights with final-weight KL regularization.
+
+    This solves the KL-regularized analogue of the L2 reweighting dual:
+
+        min_z lambda * log(mean_i exp(z_i / lambda))
+              - 1/N_p * sum_j min_i (D_ji + z_i)
+
+    The induced final weights are softmax(z / lambda), scaled so that
+    sum(weights) == n_labeled.
+    """
+    if reweight_lambda <= 0:
+        raise ValueError("reweight_lambda must be positive for KL reweighting.")
+
+    if state is None:
+        state = {}
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return _kl_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter)
+    except ImportError:
+        pass
+
+    return _kl_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter)
+
+
+def _kl_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
+    import torch
+
+    class KLReweightFunction(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, z, X_pool_t, X_labeled_t, X_pool_sq, X_labeled_sq,
+                    reweight_lambda_val, chunk_size):
+            n_pool = len(X_pool_t)
+            n_labeled = len(X_labeled_t)
+            device = z.device
+
+            logits = z / reweight_lambda_val
+            probs = torch.softmax(logits, dim=0)
+            term1 = reweight_lambda_val * (
+                torch.logsumexp(logits, dim=0) - np.log(n_labeled)
+            )
+
+            total_min_sum = 0.0
+            counts = torch.zeros(n_labeled, dtype=torch.float32, device=device)
+
+            with torch.no_grad():
+                for start_p in range(0, n_pool, chunk_size):
+                    end_p = min(start_p + chunk_size, n_pool)
+                    chunk_p = X_pool_t[start_p:end_p]
+
+                    dists = X_pool_sq[start_p:end_p].unsqueeze(1) + X_labeled_sq.unsqueeze(0)
+                    dists.addmm_(chunk_p, X_labeled_t.T, beta=1.0, alpha=-2.0)
+                    dists.clamp_(min=0.0).sqrt_()
+                    dists.add_(z.unsqueeze(0))
+
+                    min_vals, argmin_idx = torch.min(dists, dim=1)
+                    total_min_sum += min_vals.sum()
+
+                    ones = torch.ones_like(argmin_idx, dtype=torch.float32)
+                    counts.scatter_add_(0, argmin_idx, ones)
+
+            loss = term1 - total_min_sum / n_pool
+            ctx.save_for_backward(probs, counts)
+            ctx.n_pool = n_pool
+            return loss
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            probs, counts = ctx.saved_tensors
+            grad_z = probs - counts / ctx.n_pool
+            return grad_output * grad_z, None, None, None, None, None, None
+
+    device = torch.device('cuda')
+    n_pool = len(X_pool)
+    n_labeled = len(X_labeled)
+
+    if 'z' in state:
+        z_prev = state['z']
+        if len(z_prev) < n_labeled:
+            z_init = np.zeros(n_labeled, dtype=np.float32)
+            z_init[:len(z_prev)] = z_prev
+        else:
+            z_init = z_prev[:n_labeled]
+    else:
+        z_init = np.zeros(n_labeled, dtype=np.float32)
+
+    z = torch.tensor(z_init, dtype=torch.float32, device=device, requires_grad=True)
+
+    pool_cache_id = (id(X_pool), X_pool.shape, str(X_pool.dtype))
+    if state.get('pool_cache_id') == pool_cache_id and 'X_pool_t' in state:
+        X_p = state['X_pool_t']
+        X_pool_sq = state['X_pool_sq']
+    else:
+        if 'X_pool_t' in state:
+            del state['X_pool_t'], state['X_pool_sq']
+            torch.cuda.empty_cache()
+        X_p = torch.as_tensor(X_pool, dtype=torch.float32, device=device).contiguous()
+        X_pool_sq = torch.sum(X_p ** 2, dim=1)
+        state['X_pool_t'] = X_p
+        state['X_pool_sq'] = X_pool_sq
+        state['pool_cache_id'] = pool_cache_id
+        print(f"    [KL] Cached pool tensor on GPU: {n_pool} x {X_p.shape[1]}")
+
+    X_l = torch.as_tensor(X_labeled, dtype=torch.float32, device=device).contiguous()
+    X_labeled_sq = torch.sum(X_l ** 2, dim=1)
+
+    chunk_size = _l2_chunk_size_torch(n_pool, n_labeled, device)
+    print(f"    [KL] CUDA chunk size: {chunk_size} pool rows x {n_labeled} labeled")
+
+    optimizer = torch.optim.LBFGS([z], lr=1.0, max_iter=max_iter,
+                                  history_size=10, tolerance_grad=1e-5,
+                                  tolerance_change=1e-9)
+
+    def closure():
+        optimizer.zero_grad()
+        loss = KLReweightFunction.apply(z, X_p, X_l, X_pool_sq, X_labeled_sq,
+                                        reweight_lambda, chunk_size)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+
+    with torch.no_grad():
+        z_centered = z - z.mean()
+        w = torch.softmax(z_centered / reweight_lambda, dim=0)
+        z_final = z_centered.cpu().numpy()
+        w = (w * n_labeled).cpu().numpy().astype(np.float64)
+
+    state['z'] = z_final
+    del X_l, X_labeled_sq, z
+    return w
+
+
+def _kl_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_iter=15):
+    from scipy.optimize import minimize
+    from scipy.special import logsumexp
+
+    n_pool = len(X_pool)
+    n_labeled = len(X_labeled)
+
+    if 'z' in state:
+        z_prev = state['z']
+        if len(z_prev) < n_labeled:
+            z_init = np.zeros(n_labeled, dtype=np.float64)
+            z_init[:len(z_prev)] = z_prev
+        else:
+            z_init = z_prev[:n_labeled].astype(np.float64)
+    else:
+        z_init = np.zeros(n_labeled, dtype=np.float64)
+
+    max_elements = 50_000_000
+    chunk_size = max(1, max_elements // n_labeled)
+
+    def objective_and_grad(z_val):
+        logits = z_val / reweight_lambda
+        lse = logsumexp(logits)
+        probs = np.exp(logits - lse)
+        term1 = reweight_lambda * (lse - np.log(n_labeled))
+
+        total_min_sum = 0.0
+        counts = np.zeros(n_labeled, dtype=np.float64)
+
+        for start_p in range(0, n_pool, chunk_size):
+            end_p = min(start_p + chunk_size, n_pool)
+            D_chunk = cdist(X_pool[start_p:end_p], X_labeled, metric='euclidean')
+            D_chunk += z_val[np.newaxis, :]
+
+            min_vals = D_chunk.min(axis=1)
+            argmin_idx = D_chunk.argmin(axis=1)
+
+            total_min_sum += min_vals.sum()
+            counts += np.bincount(argmin_idx, minlength=n_labeled)
+
+        term2 = -total_min_sum / n_pool
+        grad = probs - counts / n_pool
+        return term1 + term2, grad
+
+    res = minimize(
+        fun=objective_and_grad,
+        x0=z_init,
+        jac=True,
+        method='L-BFGS-B',
+        options={'maxiter': max_iter, 'gtol': 1e-5}
+    )
+
+    z_final = res.x - res.x.mean()
+    state['z'] = z_final
+
+    logits = z_final / reweight_lambda
+    probs = np.exp(logits - logsumexp(logits))
+    return (probs * n_labeled).astype(np.float64)
+
+
 STRATEGIES = {
     "random": query_random,
     "uncertainty": query_uncertainty,
@@ -2019,11 +2214,12 @@ def run_active_learning(args):
         voronoi_state = {}
         soft_voronoi_state = {}
         l2_state = {}
+        kl_state = {}
         final_sw = None
 
         # Pre-compute fixed soft-pool subsample for this trial (reused across snapshots
         # so the incremental top-K cache stays valid)
-        if args.reweighting in ("soft", "l2") and args.softmax_pool_size and args.softmax_pool_size < len(X_pool):
+        if args.reweighting in ("soft", "l2", "kl") and args.softmax_pool_size and args.softmax_pool_size < len(X_pool):
             soft_pool_idx = rng.choice(len(X_pool), args.softmax_pool_size, replace=False)
             X_soft_pool = X_pool[soft_pool_idx]
         else:
@@ -2036,7 +2232,7 @@ def run_active_learning(args):
 
         # Helper: train → evaluate → record → log
         def snapshot(n_queries, prev_clf=None):
-            nonlocal voronoi_state, l2_state, final_sw
+            nonlocal voronoi_state, l2_state, kl_state, final_sw
             Xl, yl = X_labeled[:n_labeled], y_labeled[:n_labeled]
             if len(np.unique(yl)) < 2:
                 # Both classes required; skip this checkpoint and keep previous clf.
@@ -2069,7 +2265,16 @@ def run_active_learning(args):
                       f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
                 sw = compute_l2_weights(X_soft_pool, Xl, args.reweight_lambda,
                                         state=l2_state,
-                                        max_iter=getattr(args, "l2_max_iter_warm", 40))
+                                        max_iter=getattr(args, "l2_max_iter_warm", 15))
+            elif args.reweighting == "kl":
+                reweight_t0 = time.perf_counter()
+                reweight_label = "KL weights"
+                print(f"  [KL] Computing sample weights (λ={args.reweight_lambda}, "
+                      f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
+                      f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
+                sw = compute_kl_weights(X_soft_pool, Xl, args.reweight_lambda,
+                                        state=kl_state,
+                                        max_iter=getattr(args, "l2_max_iter_warm", 15))
 
             if reweight_t0 is not None:
                 _timing(reweight_label, reweight_t0)
@@ -2261,18 +2466,18 @@ def main():
     # Model
     a("--lambda-MP", type=float, default=1.0, help="Desired total-weight ratio MP/MR. Per-sample weights are auto-scaled so n_MP*w_MP / n_MR*w_MR = lambda_MP.")
     a("--C",         type=float, default=1.0, help="Inverse regularisation strength.")
-    a("--reweighting", default="none", choices=["none", "hard", "soft", "l2"],
-       help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, l2=L2 norm regularized Wasserstein distance.")
+    a("--reweighting", default="none", choices=["none", "hard", "soft", "l2", "kl"],
+       help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, l2/kl=final-weight regularized Wasserstein distance.")
     a("--reweight-lambda", type=float, default=1.0,
-       help="Regularisation strength lambda for L2 Wasserstein reweighting. Only used when --reweighting=l2.")
+       help="Regularisation strength lambda for L2/KL Wasserstein reweighting.")
     a("--l2-max-iter-warm", type=int, default=15,
-       help="Maximum LBFGS iterations for L2 reweighting.")
+       help="Maximum LBFGS iterations for L2/KL reweighting.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
        help="Top-K for soft reweighting. 0=auto (calibrate K per snapshot). Only used when --reweighting=soft.")
     a("--softmax-pool-size", type=int, default=None,
-       help="Subsample pool to this size for soft/L2 reweighting. By default (None) uses the full pool. "
+       help="Subsample pool to this size for soft/L2/KL reweighting. By default (None) uses the full pool. "
             "Setting e.g. 500000 computes weights on a 500k subsample instead of the full pool. "
             "Hard reweighting is unaffected.")
 
