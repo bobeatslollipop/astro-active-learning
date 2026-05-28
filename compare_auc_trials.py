@@ -60,6 +60,12 @@ PALETTE = [
     "#2980B9",  # dark blue
 ]
 
+DEFAULT_FIGSIZE = (10.0, 5.8)
+AXIS_LABEL_FONTSIZE = 18
+TICK_FONTSIZE = 14
+LEGEND_FONTSIZE = 15
+TITLE_FONTSIZE = 18
+
 
 def natural_sort_key(path: Path) -> list:
     """Key function for natural/alphanumeric sorting of paths."""
@@ -153,8 +159,8 @@ def plot_comparison(
     labels: list[str],
     out_path: Path,
     show_trials: bool = False,
-    figsize: tuple[float, float] = (12, 7),
-    title: str = "PR-AUC Comparison across Experiments",
+    figsize: tuple[float, float] = DEFAULT_FIGSIZE,
+    title: str = "",
     cmap_runs: str | None = None,
 ) -> None:
     """Plot all experiments on the same axes with mean ± 1σ shading."""
@@ -181,8 +187,8 @@ def plot_comparison(
             qp, mean,
             "o-",
             color=color,
-            lw=2.2,
-            markersize=5,
+            lw=2.4,
+            markersize=5.5,
             label=f"{label}  (n={n})",
             zorder=3,
         )
@@ -209,12 +215,13 @@ def plot_comparison(
                 )
 
     # Axis labels, title, grid
-    ax.set_xlabel("Number of Queries", fontsize=13)
-    ax.set_ylabel("PR-AUC (MP Class)", fontsize=13)
-    ax.set_title(title, fontsize=15, fontweight="bold", pad=12)
-    ax.legend(fontsize=11, framealpha=0.85, loc="best")
+    ax.set_xlabel("Number of Queries", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel("PR-AUC (MP Class)", fontsize=AXIS_LABEL_FONTSIZE)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold", pad=10)
+    ax.legend(fontsize=LEGEND_FONTSIZE, framealpha=0.85, loc="upper left")
     ax.grid(True, alpha=0.3, linestyle="--")
-    ax.tick_params(labelsize=11)
+    ax.tick_params(labelsize=TICK_FONTSIZE)
 
     # Print a summary table of final AUC values
     print(f"\n{'Experiment':<35} {'n_trials':>8} {'Final AUC Mean':>14} {'Final AUC Std':>13}")
@@ -236,8 +243,8 @@ def plot_mp_count_comparison(
     labels: list[str],
     out_path: Path,
     show_trials: bool = False,
-    figsize: tuple[float, float] = (12, 7),
-    title: str = "Queried MP Count Comparison",
+    figsize: tuple[float, float] = DEFAULT_FIGSIZE,
+    title: str = "",
     cmap_runs: str | None = None,
 ) -> None:
     """Plot MP count curves for all experiments that have MP data."""
@@ -267,7 +274,7 @@ def plot_mp_count_comparison(
         n     = exp["n_trials"]
 
         ax.plot(
-            qp, mean, "o-", color=color, lw=2.2, markersize=5,
+            qp, mean, "o-", color=color, lw=2.4, markersize=5.5,
             label=f"{label}  (n={n})", zorder=3,
         )
         ax.fill_between(qp, mean - std, mean + std, alpha=0.18, color=color)
@@ -276,12 +283,13 @@ def plot_mp_count_comparison(
             for trial_row in exp["mp_counts"]:
                 ax.plot(qp, trial_row, "-", color=color, alpha=0.20, lw=0.8, zorder=1)
 
-    ax.set_xlabel("Number of Queries", fontsize=13)
-    ax.set_ylabel("Number of MP Samples in Queries", fontsize=13)
-    ax.set_title(title, fontsize=15, fontweight="bold", pad=12)
-    ax.legend(fontsize=11, framealpha=0.85, loc="best")
+    ax.set_xlabel("Number of Queries", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel("Number of MP Samples in Queries", fontsize=AXIS_LABEL_FONTSIZE)
+    if title:
+        ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold", pad=10)
+    ax.legend(fontsize=LEGEND_FONTSIZE, framealpha=0.85, loc="upper left")
     ax.grid(True, alpha=0.3, linestyle="--")
-    ax.tick_params(labelsize=11)
+    ax.tick_params(labelsize=TICK_FONTSIZE)
 
     # Print summary
     print(f"\n{'Experiment':<35} {'n_trials':>8} {'Final MP Count':>14} {'Std':>8}")
@@ -336,14 +344,14 @@ def parse_args() -> argparse.Namespace:
         "--figsize",
         nargs=2,
         type=float,
-        default=[12, 7],
+        default=list(DEFAULT_FIGSIZE),
         metavar=("W", "H"),
-        help="Figure size in inches: width height (default: 12 7).",
+        help="Figure size in inches: width height (default: 10 5.8).",
     )
     p.add_argument(
         "--title",
-        default="PR-AUC Comparison across Experiments",
-        help="Plot title.",
+        default="",
+        help="Plot title. Default is empty, matching the compact poster-style layout.",
     )
     p.add_argument(
         "--base-dir",
