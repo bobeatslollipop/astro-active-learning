@@ -4,7 +4,7 @@
 
 This project implements an active learning framework for stellar classification, focusing on identifying metal-poor stars from imbalanced and biased datasets.
 
-*   **`active_learning.py`**: The core active learning loop. It supports query strategies (`random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `entropicOT`, `kmedianpp`, `moment_matching`), final models (`logistic`, `ridge`), and dataset-shift reweighting (`none`, `hard`, `soft`, `voronoi_l2`, `kl`, `moment_l2`).
+*   **`active_learning.py`**: The core active learning loop. It supports query strategies (`random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `wasserstein_l2`, `entropicOT`, `kmedianpp`, `moment_matching`), final models (`logistic`, `ridge`, `xgboost`), and dataset-shift reweighting (`none`, `hard`, `soft`, `voronoi_l2`, `kl`, `moment_l2`).
 *   **`run_experiments.sh`, `run_voronoi_l2_sweep.sh`, `run_moment_sweep.sh`**: Shell scripts for batch active-learning runs, Voronoi-L2 reweighting sweeps, and linear moment-L2 sweeps.
 *   **`linear_classifier.py`, `linear_regression.py`, `two_layers.py`**: Baseline model training scripts (logistic regression, linear regression, and a 2-layer neural network) for training on fixed datasets.
 *   **`compare_auc_trials.py`**: A plotting utility to compare PR-AUC learning curves across multiple active learning runs.
@@ -49,7 +49,7 @@ python visualize_embedding.py --method umap --threshold -2.0 --eval_weights line
 
 ## Active Learning (Warm Start)
 
-Trains a classifier via active learning, starting from a biased initial set (e.g. low-$T_{\rm eff}$ stars) and iteratively querying the full population. The default final model is logistic regression; `--model ridge` uses regularized linear regression as a classifier.
+Trains a classifier via active learning, starting from a biased initial set (e.g. low-$T_{\rm eff}$ stars) and iteratively querying the full population. The default final model is logistic regression; `--model ridge` uses regularized linear regression as a classifier; `--model xgboost` uses the boosted decision-tree family used by Yao et al. for Gaia XP metal-poor candidate selection.
 
 ```bash
 CUDA_VISIBLE_DEVICES=1
@@ -58,11 +58,11 @@ python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
   --full-data-file  bp_rp_lamost_normalized.h5 \
   --feh-threshold   -2.0 \
-  --strategy        wasserstein \
+  --strategy        wasserstein_l2 \
   --model           logistic \
   --reweighting     voronoi_l2 \
   --reweight-lambda 3000 \
-  --softmax-pool-size 100000 \
+  --reweight-pool-size 100000 \
   --total-queries   100 \
   --eval-every      10 \
   --lambda-MP       0.01 \
@@ -72,10 +72,10 @@ python active_learning.py \
   --seed            42 \
   --n-trials        16 \
   --n-snapshots     10 \
-  --out-dir         al_wasserstein_voronoi_l2_100_lambda_3000
+  --out-dir         al_wasserstein_l2_100_lambda_3000
 ```
 
-Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR curves, weight-distribution plots for reweighted runs, and multi-trial summaries such as `auc_trials.json`/`auc_trials.png` when `--n-trials > 1`.
+Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv` (linear weights for linear models or feature importances for tree models), PR curves, weight-distribution plots for reweighted runs, and multi-trial summaries such as `auc_trials.json`/`auc_trials.png` when `--n-trials > 1`.
 
 ### Arguments
 
@@ -84,23 +84,34 @@ Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR
 | `--warm-start-file` | `bp_rp_lamost_normalized_low_teff.h5` | H5 file for the biased warm-start set. |
 | `--full-data-file` | `bp_rp_lamost_normalized.h5` | H5 file for the full population (pool + eval). |
 | `--feh-threshold` | `-2.0` | Fe/H cut: < threshold → MP (0), ≥ threshold → MR (1). |
-| `--strategy` | `uncertainty` | Query strategy: `random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `entropicOT`, `kmedianpp`, `moment_matching`. |
+| `--strategy` | `uncertainty` | Query strategy: `random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `wasserstein_l2`, `entropicOT`, `kmedianpp`, `moment_matching`. |
 | `--total-queries` | `3000` | Total points to query from the pool. |
 | `--eval-every` | `200` | Retrain and evaluate every k queries. |
-| `--model` | `logistic` | Final classifier: `logistic` or `ridge`. |
+| `--model` | `logistic` | Final classifier: `logistic`, `ridge`, or `xgboost`. |
 | `--lambda-MP` | `1.0` | Desired total-weight ratio MP/MR. Per-sample weights auto-scale: $w_{MP} = \lambda \cdot n_{MR}/n_{MP}$. |
 | `--C` | `1.0` | Inverse L2 regularisation strength for the logistic regression classifier. Larger values mean weaker classifier regularization. |
 | `--ridge-alpha` | `1.0` | L2 regularization strength for `--model ridge`. Larger values mean stronger ridge regularization. |
+| `--xgb-n-estimators` | `400` | Number of boosted trees for `--model xgboost`. |
+| `--xgb-max-depth` | `6` | Maximum tree depth for `--model xgboost`. |
+| `--xgb-learning-rate` | `0.1` | XGBoost learning rate $\eta$. |
+| `--xgb-subsample` | `0.8` | Row subsample fraction for XGBoost. |
+| `--xgb-colsample-bytree` | `0.8` | Feature subsample fraction per tree for XGBoost. |
+| `--xgb-min-child-weight` | `1.0` | XGBoost minimum child weight. |
+| `--xgb-gamma` | `0.0` | XGBoost minimum loss reduction required for a split. |
+| `--xgb-reg-lambda` | `1.0` | XGBoost L2 regularization on leaf weights. |
+| `--xgb-tree-method` | `hist` | XGBoost tree construction method, e.g. `hist` or `gpu_hist`. |
+| `--xgb-n-jobs` | `-1` | Parallel workers for XGBoost. |
 | `--reweighting` | `none` | Covariate-shift correction: `none`=uniform weights, `hard`=hard Voronoi weights, `soft`=temperature softmin weights, `voronoi_l2`=L2-regularized Wasserstein/Voronoi final weights, `kl`=KL-regularized Wasserstein/Voronoi final weights, `moment_l2`=linear second-moment weights with L2 weight regularization. |
 | `--reweight-lambda` | `1.0` | Regularization strength for `voronoi_l2`, `kl`, and `moment_l2` reweighting. Larger values produce less concentrated final weights. |
 | `--voronoi-l2-max-iter` | `15` | Maximum LBFGS iterations for `voronoi_l2`/`kl` reweighting at each snapshot. |
 | `--temperature` | `1.0` | Temperature for `soft` reweighting. Smaller values approach hard Voronoi weights. |
 | `--soft-topk` | `0` | Top-K nearest labeled points for `soft` reweighting. `0` auto-calibrates per snapshot. |
-| `--softmax-pool-size` | `None` | Subsample pool to this size for `soft`, `voronoi_l2`, `kl`, and `moment_l2` reweighting. `None` uses the full pool. Hard reweighting is unaffected. |
+| `--reweight-pool-size` | `None` | Subsample pool to this size for `soft`, `voronoi_l2`, `kl`, and `moment_l2` reweighting. `None` uses the full pool. Hard reweighting is unaffected. |
 | `--eval-size` | `100000` | Size of random eval subsample drawn from the full population. |
 | `--warm-start-max` | `None` | Cap warm-start size (subsampled if exceeded). |
 | `--pool-max` | `None` | Cap full-population size (subsampled if exceeded). |
-| `--wass-pool-size` | `50000` | Subpool size for `wasserstein` and `entropicOT` query planning. |
+| `--wass-pool-size` | `50000` | Subpool size for `wasserstein`, `wasserstein_l2`, and `entropicOT` query planning. |
+| `--wass-plan-size` | `eval_every` | Number of Wasserstein-greedy points to plan before rebuilding the random subpool. Set to `total_queries` to reproduce the old one-shot plan. |
 | `--eot-temperature` | `1.0` | Temperature for `entropicOT` query planning. Smaller values approach hard Wasserstein selection. |
 | `--moment-ridge` | `1.0` | Ridge regularization used inside the `moment_matching` query objective. |
 | `--moment-weight-iters` | `200` | Projected subgradient iterations for `--reweighting moment_l2`. |
@@ -119,6 +130,7 @@ Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR
 | `entropy` | Sample points by predictive entropy. |
 | `margin` | Pick points with smallest \|decision function\| (closest to boundary). |
 | `wasserstein` | Greedy core-set: maximise coverage of the full population. |
+| `wasserstein_l2` | Greedy core-set with a Voronoi-L2 mass penalty; only valid with `--reweighting voronoi_l2`. |
 | `entropicOT` | Entropic optimal-transport variant of Wasserstein-style coverage. |
 | `kmedianpp` | k-median++ style geometric coverage baseline. |
 | `moment_matching` | Greedy ridge linear-design selection that reduces target second-moment prediction discrepancy. |
@@ -140,7 +152,7 @@ Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv`, PR
 
 ```bash
 # Auto-discover all experiment subdirectories that contain auc_trials.json
-python compare_auc_trials.py --base-dir presentation_runs/ --cmap-runs viridis
+python compare_auc_trials.py --base-dir experiment_results_100/ --cmap-runs viridis
 
 
 # Compare a specific subset, with custom legend labels and output file

@@ -17,16 +17,16 @@ SEED=42
 N_TRIALS=16
 N_SNAPSHOTS=10
 SOFT_TOPK=20
-SOFTMAX_POOL=100000
+REWEIGHT_POOL=100000
 
-# ── Voronoi-L2 lambda sweep ──
-LAMBDAS=(3000 10000 30000)
+# ── Wasserstein-L2 query + Voronoi-L2 reweighting lambda sweep ──
+LAMBDAS=(300 1000 3000 10000 30000)
 
 for lambda in "${LAMBDAS[@]}"; do
-  out_dir="voronoi_l2_sweep_results/al_wasserstein_voronoi_l2_${TOTAL_QUERIES}_lambda_${lambda}"
+  out_dir="truelygreedy_l2_sweep/al_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"
   echo ""
   echo "============================================================"
-  echo "  Strategy: wasserstein  |  Reweighting: voronoi_l2"
+  echo "  Strategy: wasserstein_l2  |  Reweighting: voronoi_l2"
   echo "  Reweight Lambda: ${lambda}"
   echo "  Output:   ${out_dir}"
   echo "============================================================"
@@ -35,10 +35,10 @@ for lambda in "${LAMBDAS[@]}"; do
     --warm-start-file "$WARM_START" \
     --full-data-file  "$FULL_DATA" \
     --feh-threshold   "$FEH_THRESHOLD" \
-    --strategy        "wasserstein" \
+    --strategy        "wasserstein_l2" \
     --reweighting     "voronoi_l2" \
     --soft-topk       "$SOFT_TOPK" \
-    --softmax-pool-size "$SOFTMAX_POOL" \
+    --reweight-pool-size "$REWEIGHT_POOL" \
     --reweight-lambda "$lambda" \
     --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \

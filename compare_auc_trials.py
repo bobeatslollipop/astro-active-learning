@@ -219,6 +219,20 @@ def plot_comparison(
     ax.set_ylabel("PR-AUC (MP Class)", fontsize=AXIS_LABEL_FONTSIZE)
     if title:
         ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold", pad=10)
+
+    # Set y-axis maximum to be at least 0.04 higher than the highest plotted point
+    max_y = -np.inf
+    for exp in experiments:
+        val = np.nanmax(exp["mean_auc"] + exp["std_auc"])
+        if val > max_y:
+            max_y = val
+        if show_trials:
+            val_trials = np.nanmax(exp["aucs_array"])
+            if val_trials > max_y:
+                max_y = val_trials
+    if np.isfinite(max_y):
+        ax.set_ylim(ymax=max_y + 0.02)
+
     ax.legend(fontsize=LEGEND_FONTSIZE, framealpha=0.85, loc="upper left")
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.tick_params(labelsize=TICK_FONTSIZE)

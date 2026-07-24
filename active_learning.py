@@ -6,13 +6,14 @@ Workflow:
   2. Load the full population dataset.
   3. Build a candidate pool = full population minus warm-start set.
   4. Iteratively query points from the pool using a chosen strategy.
-  5. Every k queries, retrain logistic regression on all labeled data
+  5. Every k queries, retrain the selected classifier on all labeled data
      and evaluate on a random subsample of the full population.
 
 Usage:
   python active_learning.py --strategy random --total-queries 3000 --eval-every 200
   python active_learning.py --strategy uncertainty --total-queries 3000 --eval-every 200
   python active_learning.py --strategy wasserstein --total-queries 3000 --eval-every 200
+  python active_learning.py --strategy wasserstein_l2 --reweighting voronoi_l2 --reweight-lambda 3000
   python active_learning.py --strategy uncertainty --n-trials 5 --n-snapshots 3
 """
 
@@ -230,6 +231,7 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None,
         state.get("pool_n") == n_pool
         and state.get("pool_array_id") == id(X_pool)
         and state.get("pool_size") == pool_size
+        and state.get("plan_size") == plan_n
         and "planned_indices" in state
         and "plan_cursor" in state
     )
@@ -243,6 +245,7 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None,
         state["pool_n"] = n_pool
         state["pool_array_id"] = id(X_pool)
         state["pool_size"] = pool_size
+        state["plan_size"] = plan_n
         _timing("Wasserstein plan build", t_plan)
 
     selected = []
@@ -286,6 +289,106 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None,
     return np.array(selected, dtype=np.intp)
 
 
+def query_wasserstein_l2(X_pool, clf, n, rng, *, X_labeled=None, state=None,
+                         pool_size=50000, plan_size=None, available_mask=None,
+                         reweight_lambda=1.0, **kw):
+    """Greedy Wasserstein query with a Voronoi-L2 mass penalty.
+
+    This follows the same subpool planning structure as ``query_wasserstein``,
+    but scores each candidate by
+
+        WWD(S union {u}, T) + lambda * w_u^2
+
+    where ``w_u`` is the fraction of target-subpool points whose nearest
+    representative would become the candidate.  The old support's L2 term
+    is shared by all candidates at a greedy step, so the candidate-specific
+    ranking term is exactly this induced mass penalty.  The regularizer is
+    the same lambda used by ``--reweighting voronoi_l2``.
+    """
+    if state is None:
+        state = {}
+
+    lam = float(reweight_lambda)
+    if lam <= 0:
+        raise ValueError("wasserstein_l2 query requires a positive reweight_lambda.")
+
+    n_pool = len(X_pool)
+    n_pick = min(n, n_pool)
+    if n_pick <= 0:
+        return np.empty(0, dtype=np.intp)
+
+    if available_mask is None:
+        available_idx = np.arange(n_pool, dtype=np.intp)
+    else:
+        available_idx = np.flatnonzero(available_mask).astype(np.intp, copy=False)
+
+    if len(available_idx) == 0:
+        return np.empty(0, dtype=np.intp)
+
+    plan_n = int(plan_size) if plan_size is not None else n_pick
+    plan_n = max(plan_n, n_pick)
+    plan_is_valid = (
+        state.get("pool_n") == n_pool
+        and state.get("pool_array_id") == id(X_pool)
+        and state.get("pool_size") == pool_size
+        and state.get("plan_size") == plan_n
+        and state.get("reweight_lambda") == lam
+        and "planned_indices" in state
+        and "plan_cursor" in state
+    )
+
+    if not plan_is_valid or state["plan_cursor"] >= len(state["planned_indices"]):
+        t_plan = time.perf_counter()
+        state["planned_indices"] = _build_wasserstein_l2_plan(
+            X_pool, X_labeled, plan_n, rng, pool_size, available_idx, lam
+        )
+        state["plan_cursor"] = 0
+        state["pool_n"] = n_pool
+        state["pool_array_id"] = id(X_pool)
+        state["pool_size"] = pool_size
+        state["plan_size"] = plan_n
+        state["reweight_lambda"] = lam
+        _timing("Wasserstein-L2 plan build", t_plan)
+
+    selected = []
+    while len(selected) < n_pick:
+        planned = state["planned_indices"]
+        cursor = state["plan_cursor"]
+        while len(selected) < n_pick and cursor < len(planned):
+            idx = int(planned[cursor])
+            cursor += 1
+            if available_mask is None or available_mask[idx]:
+                selected.append(idx)
+        state["plan_cursor"] = cursor
+
+        if len(selected) >= n_pick or cursor < len(planned):
+            break
+
+        selected_arr = np.array(selected, dtype=np.intp)
+        if len(selected_arr) > 0:
+            keep = ~np.isin(available_idx, selected_arr)
+            extra_available = available_idx[keep]
+            X_seed = X_pool[selected_arr]
+            if X_labeled is not None and len(X_labeled) > 0:
+                X_seed = np.vstack([X_labeled, X_seed])
+        else:
+            extra_available = available_idx
+            X_seed = X_labeled
+
+        missing = n_pick - len(selected)
+        if len(extra_available) == 0:
+            break
+
+        t_plan = time.perf_counter()
+        state["planned_indices"] = _build_wasserstein_l2_plan(
+            X_pool, X_seed, missing, rng, pool_size, extra_available, lam
+        )
+        state["plan_cursor"] = 0
+        _timing("Wasserstein-L2 plan extension", t_plan)
+
+    return np.array(selected, dtype=np.intp)
+
+
 def _build_wasserstein_plan(X_pool, X_labeled, n_plan, rng, pool_size, available_idx):
     """Build a greedy Wasserstein query plan over a fixed available pool."""
     effective_ps = min(pool_size, len(available_idx))
@@ -308,6 +411,31 @@ def _build_wasserstein_plan(X_pool, X_labeled, n_plan, rng, pool_size, available
         chosen = _wasserstein_coupling_torch(T, X_labeled, n_plan, rng)
     else:
         chosen = _wasserstein_coupling_numpy(T, X_labeled, n_plan, rng)
+
+    return subpool_idx[np.array(chosen, dtype=np.intp)]
+
+
+def _build_wasserstein_l2_plan(X_pool, X_labeled, n_plan, rng, pool_size,
+                               available_idx, reweight_lambda):
+    """Build a greedy regularized-Wasserstein query plan over a fixed pool."""
+    effective_ps = min(pool_size, len(available_idx))
+    if effective_ps <= 0:
+        return np.empty(0, dtype=np.intp)
+
+    n_plan = min(n_plan, effective_ps)
+    subpool_idx = rng.choice(available_idx, effective_ps, replace=False)
+    T = X_pool[subpool_idx]
+
+    try:
+        import torch
+        has_torch = True
+    except ImportError:
+        has_torch = False
+
+    if has_torch and torch.cuda.is_available():
+        chosen = _wasserstein_l2_coupling_torch(T, X_labeled, n_plan, reweight_lambda)
+    else:
+        chosen = _wasserstein_l2_coupling_numpy(T, X_labeled, n_plan, reweight_lambda)
 
     return subpool_idx[np.array(chosen, dtype=np.intp)]
 
@@ -445,6 +573,41 @@ def _wasserstein_delta_update_numpy(wwds, intra_dists, old_base, base_min, chang
         wwds += (new_contribs - old_contribs).sum(axis=1) / ps
 
 
+def _wasserstein_l2_initial_capture_counts_numpy(base_min, intra_dists):
+    """Count target points each candidate would capture under current base_min."""
+    ps = len(base_min)
+    capture_counts = np.empty(ps, dtype=np.float32)
+    target_bytes = 256 * 1024 * 1024
+    row_chunk = max(1, min(ps, target_bytes // max(ps, 1)))
+    for start in range(0, ps, row_chunk):
+        end = min(start + row_chunk, ps)
+        capture_counts[start:end] = (
+            intra_dists[start:end] < base_min[np.newaxis, :]
+        ).sum(axis=1)
+    return capture_counts
+
+
+def _wasserstein_l2_delta_update_numpy(wwds, capture_counts, intra_dists,
+                                       old_base, base_min, changed):
+    """Apply an incremental WWD and captured-mass update in column chunks."""
+    ps = len(base_min)
+    target_bytes = 256 * 1024 * 1024
+    col_chunk = max(1, min(len(changed), target_bytes // max(ps * 14, 1)))
+    for start in range(0, len(changed), col_chunk):
+        cols = changed[start:start + col_chunk]
+        d_cols = intra_dists[:, cols]
+
+        old_contribs = np.minimum(old_base[cols][np.newaxis, :], d_cols)
+        new_contribs = np.minimum(base_min[cols][np.newaxis, :], d_cols)
+        wwds += (new_contribs - old_contribs).sum(axis=1) / ps
+
+        old_captures = d_cols < old_base[cols][np.newaxis, :]
+        new_captures = d_cols < base_min[cols][np.newaxis, :]
+        capture_counts += (
+            new_captures.sum(axis=1) - old_captures.sum(axis=1)
+        ).astype(np.float32)
+
+
 def _torch_matrix_chunk(length, width, device, *, n_matrices=1, fraction=0.20):
     """Choose a chunk length for a temporary CUDA matrix budget."""
     import torch
@@ -483,6 +646,44 @@ def _wasserstein_delta_update_torch(wwds, intra_dists, old_base, base_min, chang
         old_contribs = torch.minimum(old_base[cols].unsqueeze(0), intra_dists[:, cols])
         new_contribs = torch.minimum(base_min[cols].unsqueeze(0), intra_dists[:, cols])
         wwds += (new_contribs - old_contribs).sum(dim=1) / ps
+
+
+def _wasserstein_l2_initial_capture_counts_torch(base_min, intra_dists):
+    """Count target points each candidate would capture under current base_min."""
+    import torch
+    ps = len(base_min)
+    device = base_min.device
+    capture_counts = torch.empty(ps, dtype=intra_dists.dtype, device=device)
+    row_chunk = _torch_matrix_chunk(ps, ps, device, n_matrices=1, fraction=0.16)
+    for start in range(0, ps, row_chunk):
+        end = min(start + row_chunk, ps)
+        capture_counts[start:end] = (
+            intra_dists[start:end] < base_min.unsqueeze(0)
+        ).sum(dim=1).to(intra_dists.dtype)
+    return capture_counts
+
+
+def _wasserstein_l2_delta_update_torch(wwds, capture_counts, intra_dists,
+                                      old_base, base_min, changed):
+    """Apply an incremental WWD and captured-mass update in column chunks."""
+    import torch
+    ps = len(base_min)
+    device = base_min.device
+    col_chunk = _torch_matrix_chunk(len(changed), ps, device,
+                                    n_matrices=4, fraction=0.10)
+    for start in range(0, len(changed), col_chunk):
+        cols = changed[start:start + col_chunk]
+        d_cols = intra_dists[:, cols]
+
+        old_contribs = torch.minimum(old_base[cols].unsqueeze(0), d_cols)
+        new_contribs = torch.minimum(base_min[cols].unsqueeze(0), d_cols)
+        wwds += (new_contribs - old_contribs).sum(dim=1) / ps
+
+        old_captures = d_cols < old_base[cols].unsqueeze(0)
+        new_captures = d_cols < base_min[cols].unsqueeze(0)
+        capture_counts += (
+            new_captures.sum(dim=1) - old_captures.sum(dim=1)
+        ).to(capture_counts.dtype)
 
 
 def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
@@ -595,6 +796,122 @@ def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
             _wasserstein_delta_update_torch(wwds, intra_dists, old_base, base_min, changed)
 
     del T_t, intra_dists
+    torch.cuda.empty_cache()
+    return chosen
+
+
+def _wasserstein_l2_coupling_numpy(T, X_labeled, n_pick, reweight_lambda):
+    """CPU greedy coupling for WWD + lambda * captured_mass^2."""
+    ps = len(T)
+    lam = float(reweight_lambda)
+
+    intra_dists = cdist(T, T, metric='euclidean').astype(np.float32)
+
+    base_min = np.full(ps, np.inf, dtype=np.float32)
+    if X_labeled is not None and len(X_labeled) > 0:
+        CHUNK = 5000
+        for start in range(0, len(X_labeled), CHUNK):
+            end = min(start + CHUNK, len(X_labeled))
+            dists = cdist(T, X_labeled[start:end], metric='euclidean').astype(np.float32)
+            np.minimum(base_min, dists.min(axis=1), out=base_min)
+            del dists
+
+    print(f"  [CPU] Wasserstein-L2 coupling: pool_size={ps}, "
+          f"lambda={lam:g}, selecting {n_pick}")
+
+    wwds = _wasserstein_initial_wwds_numpy(base_min, intra_dists)
+    capture_counts = _wasserstein_l2_initial_capture_counts_numpy(base_min, intra_dists)
+
+    chosen = []
+    available = np.ones(ps, dtype=bool)
+    denom = float(max(ps, 1))
+
+    for _ in range(n_pick):
+        masses = np.maximum(capture_counts, 0.0) / denom
+        scores = wwds + lam * (masses ** 2)
+        scores[~available] = np.inf
+
+        best = int(np.argmin(scores))
+        if not np.isfinite(scores[best]):
+            break
+
+        chosen.append(best)
+        available[best] = False
+
+        old_base = base_min.copy()
+        np.minimum(base_min, intra_dists[best], out=base_min)
+        changed = np.where(base_min < old_base)[0]
+
+        if len(changed) > 0:
+            _wasserstein_l2_delta_update_numpy(
+                wwds, capture_counts, intra_dists, old_base, base_min, changed
+            )
+
+    return chosen
+
+
+def _wasserstein_l2_coupling_torch(T, X_labeled, n_pick, reweight_lambda):
+    """GPU greedy coupling for WWD + lambda * captured_mass^2."""
+    import torch
+    device = torch.device('cuda')
+    ps = len(T)
+    lam = float(reweight_lambda)
+
+    T_t = torch.tensor(T, dtype=torch.float32, device=device)
+    T_sq = (T_t ** 2).sum(dim=1)
+
+    intra_dists = T_sq.unsqueeze(1) + T_sq.unsqueeze(0)
+    intra_dists.addmm_(T_t, T_t.T, beta=1.0, alpha=-2.0)
+    intra_dists.clamp_(min=0.0).sqrt_()
+
+    base_min = torch.full((ps,), float('inf'), device=device)
+    if X_labeled is not None and len(X_labeled) > 0:
+        X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
+        X_l_sq = (X_l ** 2).sum(dim=1)
+        CHUNK = 10000
+        for start in range(0, len(X_l), CHUNK):
+            end = min(start + CHUNK, len(X_l))
+            dists = T_sq.unsqueeze(1) + X_l_sq[start:end].unsqueeze(0)
+            dists.addmm_(T_t, X_l[start:end].T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+            torch.minimum(base_min, dists.min(dim=1)[0], out=base_min)
+            del dists
+        del X_l, X_l_sq
+        torch.cuda.empty_cache()
+
+    print(f"  [GPU] Wasserstein-L2 coupling: pool_size={ps}, "
+          f"lambda={lam:g}, selecting {n_pick}")
+
+    wwds = _wasserstein_initial_wwds_torch(base_min, intra_dists)
+    capture_counts = _wasserstein_l2_initial_capture_counts_torch(base_min, intra_dists)
+
+    chosen = []
+    available = torch.ones(ps, dtype=torch.bool, device=device)
+    denom = float(max(ps, 1))
+
+    for _ in range(n_pick):
+        masses = torch.clamp(capture_counts, min=0.0) / denom
+        scores = wwds + lam * (masses ** 2)
+        scores = scores.clone()
+        scores[~available] = float('inf')
+
+        best = torch.argmin(scores).item()
+        if not torch.isfinite(scores[best]).item():
+            break
+
+        chosen.append(best)
+        available[best] = False
+
+        old_base = base_min.clone()
+        torch.minimum(base_min, intra_dists[best], out=base_min)
+        changed = torch.where(base_min < old_base)[0]
+
+        if len(changed) > 0:
+            _wasserstein_l2_delta_update_torch(
+                wwds, capture_counts, intra_dists, old_base, base_min, changed
+            )
+
+    del T_t, intra_dists, wwds, capture_counts
     torch.cuda.empty_cache()
     return chosen
 
@@ -1553,15 +1870,16 @@ def _voronoi_l2_weights_torch(X_pool, X_labeled, reweight_lambda, state, max_ite
     n_pool = len(X_pool)
     n_labeled = len(X_labeled)
 
+    uniform_z = 2.0 * float(reweight_lambda) / max(n_labeled, 1)
     if 'z' in state:
         z_prev = state['z']
         if len(z_prev) < n_labeled:
-            z_init = np.zeros(n_labeled, dtype=np.float32)
+            z_init = np.full(n_labeled, uniform_z, dtype=np.float32)
             z_init[:len(z_prev)] = z_prev
         else:
             z_init = z_prev[:n_labeled]
     else:
-        z_init = np.zeros(n_labeled, dtype=np.float32)
+        z_init = np.full(n_labeled, uniform_z, dtype=np.float32)
 
     z = torch.tensor(z_init, dtype=torch.float32, device=device, requires_grad=True)
 
@@ -1620,15 +1938,16 @@ def _voronoi_l2_weights_numpy(X_pool, X_labeled, reweight_lambda, state, max_ite
     n_pool = len(X_pool)
     n_labeled = len(X_labeled)
 
+    uniform_z = 2.0 * float(reweight_lambda) / max(n_labeled, 1)
     if 'z' in state:
         z_prev = state['z']
         if len(z_prev) < n_labeled:
-            z_init = np.zeros(n_labeled, dtype=np.float64)
+            z_init = np.full(n_labeled, uniform_z, dtype=np.float64)
             z_init[:len(z_prev)] = z_prev
         else:
             z_init = z_prev[:n_labeled].astype(np.float64)
     else:
-        z_init = np.zeros(n_labeled, dtype=np.float64)
+        z_init = np.full(n_labeled, uniform_z, dtype=np.float64)
 
     # Dynamic chunk size based on n_labeled to bound memory
     max_elements = 50_000_000
@@ -1975,6 +2294,7 @@ STRATEGIES = {
     "entropy": query_entropy,
     "margin": query_margin,
     "wasserstein": query_wasserstein,
+    "wasserstein_l2": query_wasserstein_l2,
     "entropicOT": query_entropicOT,
     "kmedianpp": query_kmedianpp,
     "moment_matching": query_moment_matching,
@@ -2099,6 +2419,82 @@ def train_ridge_classifier(X, y, lambda_MP=1.0, alpha=1.0, sample_weight=None):
         sol = (np.linalg.pinv(gram) @ rhs).ravel()
 
     return RidgeRegressionClassifier(sol[:-1], sol[-1])
+
+
+class XGBoostBinaryClassifier:
+    """Thin adapter exposing the classifier interface used by this script."""
+
+    def __init__(self, model):
+        self.model = model
+        self.classes_ = np.array([0, 1], dtype=np.int32)
+
+    @property
+    def feature_importances_(self):
+        return getattr(self.model, "feature_importances_", None)
+
+    def predict_proba(self, X):
+        proba = np.asarray(self.model.predict_proba(X), dtype=np.float64)
+        if proba.ndim == 1:
+            proba = np.column_stack([1.0 - proba, proba])
+        return proba
+
+    def decision_function(self, X):
+        p_mr = np.clip(self.predict_proba(X)[:, 1], 1e-12, 1.0 - 1e-12)
+        return np.log(p_mr / (1.0 - p_mr))
+
+    def predict(self, X):
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(np.int32)
+
+
+def train_xgboost_classifier(X, y, lambda_MP=1.0, sample_weight=None, *,
+                             n_estimators=400, max_depth=6, learning_rate=0.1,
+                             subsample=0.8, colsample_bytree=0.8,
+                             min_child_weight=1.0, gamma=0.0,
+                             reg_lambda=1.0, tree_method="hist",
+                             device="auto", n_jobs=-1, random_state=42):
+    """Train an XGBoost boosted-tree classifier, following Yao et al.'s model family.
+
+    The paper uses XGBoost multiclass classifiers over metallicity bins.  The
+    active-learning loop here has only binary MP/MR labels, so this implements
+    the same boosted decision-tree family as a binary classifier while preserving
+    the existing class-ratio and reweighting semantics.
+    """
+    try:
+        from xgboost import XGBClassifier
+    except ImportError as exc:
+        raise ImportError(
+            "--model xgboost requires the optional 'xgboost' package. "
+            "Install it in this environment, e.g. `pip install xgboost`, "
+            "then rerun with --model xgboost."
+        ) from exc
+
+    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight)
+    params = dict(
+        objective="binary:logistic",
+        eval_metric="logloss",
+        n_estimators=int(n_estimators),
+        max_depth=int(max_depth),
+        learning_rate=float(learning_rate),
+        subsample=float(subsample),
+        colsample_bytree=float(colsample_bytree),
+        min_child_weight=float(min_child_weight),
+        gamma=float(gamma),
+        reg_lambda=float(reg_lambda),
+        tree_method=str(tree_method),
+        n_jobs=int(n_jobs),
+        random_state=int(random_state),
+    )
+    if device is not None and str(device).lower() != "auto":
+        params["device"] = str(device)
+
+    try:
+        model = XGBClassifier(use_label_encoder=False, **params)
+    except TypeError:
+        model = XGBClassifier(**params)
+
+    model.fit(np.asarray(X, dtype=np.float32), np.asarray(y, dtype=np.int32),
+              sample_weight=final_w)
+    return XGBoostBinaryClassifier(model)
 
 
 def evaluate(clf, X, y):
@@ -2239,6 +2635,110 @@ def _save_test_loss_trials_plot(eval_query_points, all_trial_test_losses, out_di
         print(f"Saved {class_label} test loss trials plot to {out_file}")
 
 
+def _compute_reweight_stats(sample_weight, y_labeled, n_queries):
+    """Summarize concentration of reweighting weights before class-ratio scaling."""
+    if sample_weight is None:
+        return None
+
+    w = np.asarray(sample_weight, dtype=np.float64).ravel()
+    if len(w) == 0:
+        return None
+
+    total = float(np.sum(w))
+    if not np.isfinite(total) or total <= 0.0:
+        return None
+
+    p = w / total
+    l2_sq = float(np.dot(p, p))
+    l2_norm = float(np.sqrt(l2_sq))
+    ess = float(1.0 / l2_sq) if l2_sq > 0.0 else float("inf")
+    nonzero = p > 0
+
+    def top_mass(k):
+        k = min(int(k), len(p))
+        if k <= 0:
+            return 0.0
+        if k == len(p):
+            return 1.0
+        return float(np.partition(p, -k)[-k:].sum())
+
+    y_arr = np.asarray(y_labeled)
+    mp_mask = y_arr == 0
+    mr_mask = y_arr == 1
+
+    return {
+        "n_queries": int(n_queries),
+        "n_labeled": int(len(w)),
+        "weight_sum": total,
+        "objective_l2_norm": l2_norm,
+        "objective_l2_sq": l2_sq,
+        "effective_sample_size": ess,
+        "effective_sample_fraction": float(ess / len(w)) if len(w) else float("nan"),
+        "max_mass": float(np.max(p)),
+        "top10_mass": top_mass(10),
+        "top100_mass": top_mass(100),
+        "nonzero_count": int(np.count_nonzero(nonzero)),
+        "nonzero_fraction": float(np.mean(nonzero)),
+        "mp_mass": float(p[mp_mask].sum()) if len(mp_mask) == len(p) else float("nan"),
+        "mr_mass": float(p[mr_mask].sum()) if len(mr_mask) == len(p) else float("nan"),
+        "returned_weight_l2_norm": float(np.linalg.norm(w)),
+        "returned_weight_l2_sq": float(np.dot(w, w)),
+    }
+
+
+def _save_weight_stats_trials_plot(all_trial_weight_stats, out_dir, n_trials):
+    if not all_trial_weight_stats or not any(all_trial_weight_stats):
+        return
+
+    query_points = sorted({
+        int(d["n_queries"])
+        for trial_data in all_trial_weight_stats
+        for d in trial_data
+        if "n_queries" in d
+    })
+    if not query_points:
+        return
+
+    q_to_col = {q: i for i, q in enumerate(query_points)}
+    metrics = [
+        ("objective_l2_norm", "Objective Weight L2 Norm ||p||_2", "weight_l2_norm_trials.png"),
+        ("objective_l2_sq", "Objective Weight L2 Squared ||p||_2^2", "weight_l2_sq_trials.png"),
+        ("effective_sample_size", "Effective Sample Size 1 / ||p||_2^2", "weight_effective_sample_size_trials.png"),
+    ]
+
+    for metric, ylabel, filename in metrics:
+        arr = np.full((len(all_trial_weight_stats), len(query_points)), np.nan, dtype=float)
+        for t, trial_data in enumerate(all_trial_weight_stats):
+            for d in trial_data:
+                if metric in d and "n_queries" in d:
+                    arr[t, q_to_col[int(d["n_queries"])]] = float(d[metric])
+
+        if np.all(np.isnan(arr)):
+            continue
+
+        mean = np.nanmean(arr, axis=0)
+        std = np.nanstd(arr, axis=0)
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(query_points, mean, "-o", color="#2563eb", lw=2.0,
+                label=f"Mean over {n_trials} trials")
+        ax.fill_between(query_points, mean - std, mean + std,
+                        color="#2563eb", alpha=0.18, label="±1 std")
+        for row in arr:
+            ax.plot(query_points, row, "-", color="#93c5fd", alpha=0.20, lw=0.8)
+
+        ax.set_xlabel("Number of Queried Points", fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.set_title(ylabel + " vs. Query Count", fontsize=14, fontweight="bold")
+        ax.grid(True, alpha=0.3, ls="--")
+        ax.legend(frameon=False, fontsize=10)
+        fig.tight_layout()
+        out_file = os.path.join(out_dir, filename)
+        fig.savefig(out_file, dpi=200)
+        plt.close(fig)
+        print(f"Saved weight-stat trials plot to {out_file}")
+
+
 def _save_mp_trials_plot(auc_query_points, all_trial_mp_counts, out_dir, n_trials):
     """Plot queried MP fraction across trials with confidence region (mean ± std)."""
     max_len = max(len(t) for t in all_trial_mp_counts)
@@ -2359,6 +2859,32 @@ def generate_pr_curve(clf_list, X_full, y_full, out_dir):
     print(f"Saved PR curve plot to {out_file}.")
 
 
+def save_final_model_summary(clf, full_data_file, out_dir):
+    """Save linear weights or tree feature importances for the final classifier."""
+    with h5py.File(full_data_file, "r") as f:
+        cols = _feature_cols(list(f.keys()))
+
+    out_file = os.path.join(out_dir, "final_weights.csv")
+    if hasattr(clf, "coef_") and hasattr(clf, "intercept_"):
+        w, b = clf.coef_.flatten(), clf.intercept_[0]
+        with open(out_file, "w") as f:
+            f.write("feature,weight\n" + f"BIAS,{b}\n")
+            f.writelines(f"{name},{wv}\n" for name, wv in zip(cols, w))
+        return
+
+    importances = getattr(clf, "feature_importances_", None)
+    if importances is not None:
+        importances = np.asarray(importances, dtype=np.float64).ravel()
+        with open(out_file, "w") as f:
+            f.write("feature,importance\n")
+            f.writelines(f"{name},{val}\n" for name, val in zip(cols, importances))
+        return
+
+    with open(out_file, "w") as f:
+        f.write("feature,value\n")
+        f.write("MODEL_HAS_NO_LINEAR_WEIGHTS_OR_FEATURE_IMPORTANCES,nan\n")
+
+
 # ── Main Loop ────────────────────────────────────────────
 
 def run_active_learning(args):
@@ -2374,6 +2900,16 @@ def run_active_learning(args):
     snap_interval = args.total_queries // args.n_snapshots
     auc_query_points = [snap_interval * (i + 1) for i in range(args.n_snapshots)]
     auc_query_set = set(auc_query_points)
+
+    strategy_fn = STRATEGIES[args.strategy]
+    if args.strategy == "wasserstein_l2":
+        if args.reweighting != "voronoi_l2":
+            raise ValueError(
+                "--strategy wasserstein_l2 is only valid with "
+                "--reweighting voronoi_l2."
+            )
+        if args.reweight_lambda <= 0:
+            raise ValueError("--strategy wasserstein_l2 requires --reweight-lambda > 0.")
 
     os.makedirs(args.out_dir, exist_ok=True)
     t0 = time.perf_counter()
@@ -2421,12 +2957,11 @@ def run_active_learning(args):
     X_labeled = np.empty((max_labeled, n_features), dtype=np.float32)
     y_labeled = np.empty(max_labeled, dtype=np.int32)
 
-    strategy_fn = STRATEGIES[args.strategy]
-
     # ── Multi-trial loop ──
     all_trial_aucs = []          # list of lists, each inner list has n_snapshots AUC values
     all_trial_mp_counts = []     # list of lists, cumulative MP counts at each snapshot
     all_trial_test_losses = []   # list of lists of dicts, test losses at each eval point
+    all_trial_weight_stats = []  # list of lists of reweighting concentration stats
     first_trial_results = None
 
     for trial in range(args.n_trials):
@@ -2456,17 +2991,18 @@ def run_active_learning(args):
         moment_weight_state = {}
         final_sw = None
 
-        # Pre-compute fixed soft-pool subsample for this trial (reused across snapshots
+        # Pre-compute fixed reweight-pool subsample for this trial (reused across snapshots
         # so the incremental top-K cache stays valid)
-        if args.reweighting in ("soft", "voronoi_l2", "kl", "moment_l2") and args.softmax_pool_size and args.softmax_pool_size < len(X_pool):
-            soft_pool_idx = rng.choice(len(X_pool), args.softmax_pool_size, replace=False)
-            X_soft_pool = X_pool[soft_pool_idx]
+        if args.reweighting in ("soft", "voronoi_l2", "kl", "moment_l2") and args.reweight_pool_size and args.reweight_pool_size < len(X_pool):
+            reweight_pool_idx = rng.choice(len(X_pool), args.reweight_pool_size, replace=False)
+            X_reweight_pool = X_pool[reweight_pool_idx]
         else:
-            X_soft_pool = X_pool
+            X_reweight_pool = X_pool
 
         trial_aucs = []
         trial_mp_counts = []
         trial_test_losses = []   # test losses at each eval point for this trial
+        trial_weight_stats = []
         clf_snapshots = []       # (queries, clf) pairs for PR curve — first trial only
 
         # Helper: train → evaluate → record → log
@@ -2491,36 +3027,40 @@ def run_active_learning(args):
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Voronoi-soft weights"
                 print(f"  [Voronoi-Soft] Computing sample weights (τ={args.temperature}, "
-                      f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
-                sw = compute_soft_voronoi_weights(X_soft_pool, Xl, args.temperature,
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
+                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                sw = compute_soft_voronoi_weights(X_reweight_pool, Xl, args.temperature,
                                                    soft_state=soft_voronoi_state,
                                                    topk=args.soft_topk)
             elif args.reweighting == "voronoi_l2":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Voronoi-L2 weights"
+                l2_max_iter = args.voronoi_l2_max_iter
+                if "z" not in voronoi_l2_state:
+                    l2_max_iter = args.voronoi_l2_initial_max_iter
                 print(f"  [Voronoi-L2] Computing sample weights (λ={args.reweight_lambda}, "
-                      f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
-                sw = compute_voronoi_l2_weights(X_soft_pool, Xl, args.reweight_lambda,
+                      f"max_iter={l2_max_iter}, "
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
+                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                sw = compute_voronoi_l2_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                                 state=voronoi_l2_state,
-                                                max_iter=args.voronoi_l2_max_iter)
+                                                max_iter=l2_max_iter)
             elif args.reweighting == "kl":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "KL weights"
                 print(f"  [KL] Computing sample weights (λ={args.reweight_lambda}, "
-                      f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
-                sw = compute_kl_weights(X_soft_pool, Xl, args.reweight_lambda,
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
+                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                sw = compute_kl_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                         state=kl_state,
                                         max_iter=args.voronoi_l2_max_iter)
             elif args.reweighting == "moment_l2":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Moment-L2 weights"
                 print(f"  [Moment-L2] Computing sample weights (λ={args.reweight_lambda}, "
-                      f"{n_labeled} labeled vs {len(X_soft_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_soft_pool) < len(X_pool) else ''})...")
-                sw = compute_moment_l2_weights(X_soft_pool, Xl, args.reweight_lambda,
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
+                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                sw = compute_moment_l2_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                                state=moment_weight_state,
                                                max_iter=args.moment_weight_iters)
 
@@ -2528,6 +3068,12 @@ def run_active_learning(args):
                 _timing(reweight_label, reweight_t0)
 
             final_sw = sw
+            stats_sw = sw
+            if args.reweighting == "none":
+                stats_sw = np.ones(len(yl), dtype=np.float64)
+            weight_stats = _compute_reweight_stats(stats_sw, yl, n_queries)
+            if weight_stats is not None:
+                trial_weight_stats.append(weight_stats)
 
             train_t0 = time.perf_counter()
             if args.model == "logistic":
@@ -2537,6 +3083,22 @@ def run_active_learning(args):
                 clf = train_ridge_classifier(Xl, yl, args.lambda_MP,
                                              alpha=args.ridge_alpha,
                                              sample_weight=sw)
+            elif args.model == "xgboost":
+                clf = train_xgboost_classifier(
+                    Xl, yl, args.lambda_MP, sample_weight=sw,
+                    n_estimators=args.xgb_n_estimators,
+                    max_depth=args.xgb_max_depth,
+                    learning_rate=args.xgb_learning_rate,
+                    subsample=args.xgb_subsample,
+                    colsample_bytree=args.xgb_colsample_bytree,
+                    min_child_weight=args.xgb_min_child_weight,
+                    gamma=args.xgb_gamma,
+                    reg_lambda=args.xgb_reg_lambda,
+                    tree_method=args.xgb_tree_method,
+                    device=args.xgb_device,
+                    n_jobs=args.xgb_n_jobs,
+                    random_state=args.seed + trial,
+                )
             else:
                 raise ValueError(f"Unknown model: {args.model}")
             _timing("Classifier train", train_t0)
@@ -2574,13 +3136,14 @@ def run_active_learning(args):
             batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
             query_t0 = time.perf_counter()
 
-            if args.strategy == "wasserstein":
+            if args.strategy in ("wasserstein", "wasserstein_l2"):
                 pool_idx = strategy_fn(X_pool, clf, batch, rng,
                                        X_labeled=X_labeled[:n_labeled],
                                        state=strategy_state,
                                        pool_size=args.wass_pool_size,
-                                       plan_size=args.total_queries,
+                                       plan_size=args.wass_plan_size,
                                        available_mask=available,
+                                       reweight_lambda=args.reweight_lambda,
                                        temperature=args.eot_temperature)
             else:
                 avail_idx = np.where(available)[0]
@@ -2628,6 +3191,7 @@ def run_active_learning(args):
         all_trial_aucs.append(trial_aucs)
         all_trial_mp_counts.append(trial_mp_counts)
         all_trial_test_losses.append(trial_test_losses)
+        all_trial_weight_stats.append(trial_weight_stats)
 
         # 7. Save detailed outputs (first trial only)
         if trial == 0:
@@ -2638,12 +3202,8 @@ def run_active_learning(args):
             with open(os.path.join(args.out_dir, "results.json"), "w") as f:
                 json.dump(results, f, indent=2)
 
-            # Final weights
-            cols = _feature_cols(list(h5py.File(args.full_data_file, "r").keys()))
-            w, b = clf.coef_.flatten(), clf.intercept_[0]
-            with open(os.path.join(args.out_dir, "final_weights.csv"), "w") as f:
-                f.write("feature,weight\n" + f"BIAS,{b}\n")
-                f.writelines(f"{name},{wv}\n" for name, wv in zip(cols, w))
+            # Linear models write coefficients; tree models write feature importances.
+            save_final_model_summary(clf, args.full_data_file, args.out_dir)
 
             with open(os.path.join(args.out_dir, "params.json"), "w") as f:
                 json.dump(vars(args), f, indent=2)
@@ -2692,13 +3252,27 @@ def run_active_learning(args):
             "trial_mp_counts": all_trial_mp_counts,
             "eval_query_points": eval_query_points,
             "trial_test_losses": all_trial_test_losses,
+            "trial_weight_stats": all_trial_weight_stats,
         }
         with open(os.path.join(args.out_dir, "auc_trials.json"), "w") as f:
             json.dump(auc_data, f, indent=2)
 
+        weight_stats_data = {
+            "weight_query_points": sorted({
+                int(d["n_queries"])
+                for trial_data in all_trial_weight_stats
+                for d in trial_data
+                if "n_queries" in d
+            }),
+            "trial_weight_stats": all_trial_weight_stats,
+        }
+        with open(os.path.join(args.out_dir, "weight_stats_trials.json"), "w") as f:
+            json.dump(weight_stats_data, f, indent=2)
+
         _save_auc_trials_plot(auc_query_points, all_trial_aucs, args.out_dir, args.n_trials)
         _save_mp_trials_plot(auc_query_points, all_trial_mp_counts, args.out_dir, args.n_trials)
         _save_test_loss_trials_plot(eval_query_points, all_trial_test_losses, args.out_dir, args.n_trials)
+        _save_weight_stats_trials_plot(all_trial_weight_stats, args.out_dir, args.n_trials)
 
     print(f"\nAll outputs saved to {args.out_dir}/")
     return first_trial_results
@@ -2721,32 +3295,60 @@ def main():
     a("--eval-every",     type=int, default=200,  help="Retrain & evaluate every k queries.")
 
     # Model
-    a("--model", default="logistic", choices=["logistic", "ridge"],
-      help="Final classifier: logistic regression or ridge-regression classifier.")
+    a("--model", default="logistic", choices=["logistic", "ridge", "xgboost"],
+      help="Final classifier: logistic regression, ridge-regression classifier, or XGBoost boosted trees.")
     a("--lambda-MP", type=float, default=1.0, help="Desired total-weight ratio MP/MR. Per-sample weights are auto-scaled so n_MP*w_MP / n_MR*w_MR = lambda_MP.")
     a("--C",         type=float, default=1.0, help="Inverse regularisation strength.")
     a("--ridge-alpha", type=float, default=1.0,
       help="L2 regularisation strength for --model=ridge. Larger values mean stronger ridge regularization.")
+    a("--xgb-n-estimators", type=int, default=400,
+      help="Number of boosted trees for --model=xgboost. The paper searched 100..1200.")
+    a("--xgb-max-depth", type=int, default=6,
+      help="Maximum tree depth for --model=xgboost. The paper searched 2..15.")
+    a("--xgb-learning-rate", type=float, default=0.1,
+      help="Learning rate eta for --model=xgboost. The paper searched 0.05..1.")
+    a("--xgb-subsample", type=float, default=0.8,
+      help="Row subsample fraction for --model=xgboost. The paper searched 0.5..1.")
+    a("--xgb-colsample-bytree", type=float, default=0.8,
+      help="Column subsample fraction per tree for --model=xgboost. The paper searched 0.3..0.9.")
+    a("--xgb-min-child-weight", type=float, default=1.0,
+      help="Minimum child weight for --model=xgboost. The paper searched 1..20.")
+    a("--xgb-gamma", type=float, default=0.0,
+      help="Minimum loss reduction required for a split for --model=xgboost. The paper searched 0..0.7.")
+    a("--xgb-reg-lambda", type=float, default=1.0,
+      help="XGBoost L2 regularization on leaf weights for --model=xgboost.")
+    a("--xgb-tree-method", default="hist",
+      help="XGBoost tree_method, e.g. hist. For XGBoost >=2 use --xgb-device cuda for GPU.")
+    a("--xgb-device", default="auto",
+      help="XGBoost device, e.g. auto, cpu, cuda, or cuda:0. Use cuda with tree_method=hist for XGBoost >=2.")
+    a("--xgb-n-jobs", type=int, default=-1,
+      help="Parallel workers for --model=xgboost.")
     a("--reweighting", default="none", choices=["none", "hard", "soft", "voronoi_l2", "kl", "moment_l2"],
        help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, voronoi_l2/kl=regularized Wasserstein final weights, moment_l2=linear second-moment weights.")
     a("--reweight-lambda", type=float, default=1.0,
        help="Regularisation strength lambda for voronoi_l2, kl, or moment_l2 reweighting.")
     a("--voronoi-l2-max-iter", type=int, default=15,
        help="Maximum LBFGS iterations for voronoi_l2/kl reweighting.")
+    a("--voronoi-l2-initial-max-iter", type=int, default=None,
+       help="Maximum LBFGS iterations for the first voronoi_l2 reweighting solve in each trial. Defaults to --voronoi-l2-max-iter.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
        help="Top-K for soft reweighting. 0=auto (calibrate K per snapshot). Only used when --reweighting=soft.")
-    a("--softmax-pool-size", type=int, default=None,
+    a("--reweight-pool-size", dest="reweight_pool_size", type=int, default=None,
        help="Subsample pool to this size for soft/voronoi_l2/kl/moment_l2 reweighting. By default (None) uses the full pool. "
             "Setting e.g. 500000 computes weights on a 500k subsample instead of the full pool. "
             "Hard reweighting is unaffected.")
+    a("--softmax-pool-size", dest="reweight_pool_size", type=int, default=None,
+       help=argparse.SUPPRESS)
 
     # Practical
     a("--eval-size",       type=int, default=100_000, help="Eval subsample size.")
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
-    a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein / entropicOT strategy. Brute-force search is O(n × pool_size²).")
+    a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein / Wasserstein-L2 / entropicOT strategy. Brute-force search is O(n × pool_size²).")
+    a("--wass-plan-size", type=int, default=None,
+      help="Number of Wasserstein-greedy points to plan before rebuilding the random subpool. Defaults to eval_every; set to total_queries to reproduce old one-shot planning.")
     a("--eot-temperature", type=float, default=1.0,
        help="Temperature τ for entropicOT query strategy. τ→0 = hard Wasserstein, τ→∞ = uniform. Only used when --strategy=entropicOT.")
     a("--moment-ridge", type=float, default=1.0,
@@ -2759,6 +3361,14 @@ def main():
     a("--out-dir",         default=None, help="Output directory (default: al_{strategy}).")
 
     args = p.parse_args()
+    if args.wass_plan_size is None:
+        args.wass_plan_size = args.eval_every
+    if args.wass_plan_size <= 0:
+        p.error("--wass-plan-size must be positive.")
+    if args.voronoi_l2_initial_max_iter is None:
+        args.voronoi_l2_initial_max_iter = args.voronoi_l2_max_iter
+    if args.voronoi_l2_initial_max_iter <= 0:
+        p.error("--voronoi-l2-initial-max-iter must be positive.")
     if args.out_dir is None:
         args.out_dir = f"al_{args.strategy}"
     run_active_learning(args)

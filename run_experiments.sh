@@ -17,15 +17,14 @@ SEED=42
 N_TRIALS=16
 N_SNAPSHOTS=10
 SOFT_TOPK=20
-SOFTMAX_POOL=100000
+REWEIGHT_POOL=100000
 REWEIGHT_LAMBDA=1000.0
 
 # ── Experiments: "strategy  reweighting  out_dir" ──
 EXPERIMENTS=(
-  "wasserstein   voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_wasserstein_voronoi_l2_${TOTAL_QUERIES}"
-  "kmedianpp     voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_kmedianpp_voronoi_l2_${TOTAL_QUERIES}"
-  "random        voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_random_voronoi_l2_${TOTAL_QUERIES}"
-  # "uncertainty   soft  experiment_results_${TOTAL_QUERIES}/al_uncertainty_soft_${TOTAL_QUERIES}"
+  # "wasserstein   voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_wasserstein_voronoi_l2_${TOTAL_QUERIES}"
+  "kmedianpp     voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_kmedianpp_l2_${TOTAL_QUERIES}"
+  "random        voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_random_l2_${TOTAL_QUERIES}"
 )
 
 # ── Run each experiment ──
@@ -43,7 +42,7 @@ for exp in "${EXPERIMENTS[@]}"; do
     --strategy        "$strategy" \
     --reweighting     "$reweighting" \
     --soft-topk       "$SOFT_TOPK" \
-    --softmax-pool-size "$SOFTMAX_POOL" \
+    --reweight-pool-size "$REWEIGHT_POOL" \
     --reweight-lambda "$REWEIGHT_LAMBDA" \
     --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \

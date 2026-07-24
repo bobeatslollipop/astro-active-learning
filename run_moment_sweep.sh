@@ -18,7 +18,7 @@ SEED=42
 N_TRIALS=16
 N_SNAPSHOTS=10
 SOFT_TOPK=20
-SOFTMAX_POOL=100000
+REWEIGHT_POOL=100000
 REWEIGHTING=moment_l2
 REWEIGHT_LAMBDA=1.0
 MOMENT_WEIGHT_ITERS=200
@@ -47,7 +47,7 @@ for moment_ridge in "${MOMENT_RIDGES[@]}"; do
     --moment-ridge    "$moment_ridge" \
     --reweighting     "$REWEIGHTING" \
     --soft-topk       "$SOFT_TOPK" \
-    --softmax-pool-size "$SOFTMAX_POOL" \
+    --reweight-pool-size "$REWEIGHT_POOL" \
     --reweight-lambda "$REWEIGHT_LAMBDA" \
     --moment-weight-iters "$MOMENT_WEIGHT_ITERS" \
     --total-queries   "$TOTAL_QUERIES" \
