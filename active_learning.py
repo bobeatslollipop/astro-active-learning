@@ -2635,6 +2635,8 @@ def compute_pr_auc(clf, X_eval, y_eval):
     y_scores = clf.predict_proba(X_eval)[:, 0]
     precision, recall, _ = precision_recall_curve(y_true_mp, y_scores)
     precision, recall = precision[:-1], recall[:-1]
+    if len(recall) < 2:
+        return 0.0
     return auc(recall, precision)
 
 
@@ -2962,7 +2964,7 @@ def generate_pr_curve(clf_list, X_full, y_full, out_dir):
         precision, recall, _ = precision_recall_curve(y_true_mp, y_scores)
         # Drop the sklearn sentinel point (recall=0, precision=1) at the end
         precision, recall = precision[:-1], recall[:-1]
-        pr_auc = auc(recall, precision)
+        pr_auc = auc(recall, precision) if len(recall) >= 2 else 0.0
 
         color = colors[i % len(colors)]
         ax.plot(recall, precision, color=color, lw=2,

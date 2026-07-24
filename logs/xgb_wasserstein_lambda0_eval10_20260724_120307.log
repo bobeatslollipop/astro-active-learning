@@ -1,0 +1,1174 @@
+
+============================================================
+  Strategy:       wasserstein
+  Reweighting:    hard
+  lambda_MP:      0.01
+  Lambda:         0.0 (unregularized)
+  Eval every:     10
+  Output:         Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10
+============================================================
+/usr/lib/python3/dist-packages/scipy/__init__.py:146: UserWarning: A NumPy version >=1.17.3 and <1.25.0 is required for this version of SciPy (detected version 1.26.4
+  warnings.warn(f"A NumPy version >={np_minversion} and <{np_maxversion}"
+  [Torch] CUDA detected; TF32 matmul enabled where supported.
+Loading warm-start data from bp_rp_lamost_normalized_low_teff.h5 ...
+Loading full population from bp_rp_lamost_normalized.h5 ...
+  Data loaded in 17.7s
+  Warm-start: 450000 (MP=1580, MR=448420)
+  Pool: 4821583 (MP=8496, MR=4813087)
+  Eval set: 500000 (MP=873, MR=499127)
+  Eval source: pool (legacy behavior; eval rows are sampled from the query pool)
+  Train weight-sum mode: fixed; initial labeled count=450000; initial target sum=10000
+
+============================================================
+Trial 1 / 5  (seed=42)
+============================================================
+  [Voronoi-Hard] Computing sample weights (450000 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 115.28s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:05:22] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.11s
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/core.py:751: UserWarning: [12:05:24] WARNING: /__w/xgboost/xgboost/src/common/error_msg.cc:62: Falling back to prediction using DMatrix due to mismatched devices. This might lead to higher memory usage and slower performance. XGBoost is running on: cuda:0, while the input data is on: cpu.
+Potential solutions:
+- Use a data structure that matches the device ordinal in the booster.
+- Set the device for booster before call to inplace_predict.
+
+This warning will only be shown once.
+
+  return func(**kwargs)
+  [Timing] Evaluation: 1.22s
+[Query    0] Acc=0.9943  Loss(test MP=2.4341 MR=0.0255 avg=1.2298)  labeled=450000 (MP=1580, MR=448420)
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.43s
+  [Timing] wasserstein query selection: 1.43s
+  [Voronoi-Hard] Computing sample weights (450010 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:05:27] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.20s
+[Query   10] Acc=0.9949  Loss(test MP=2.4208 MR=0.0228 avg=1.2218)  labeled=450010 (MP=1580, MR=448430)
+  >> AUC snapshot at 10 queries: PR-AUC(trapz) = 0.0560; AP = 0.0581
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450020 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:05:33] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.19s
+[Query   20] Acc=0.9951  Loss(test MP=2.2547 MR=0.0227 avg=1.1387)  labeled=450020 (MP=1580, MR=448440)
+  >> AUC snapshot at 20 queries: PR-AUC(trapz) = 0.0632; AP = 0.0652
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450030 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:05:39] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.19s
+[Query   30] Acc=0.9959  Loss(test MP=2.2968 MR=0.0198 avg=1.1583)  labeled=450030 (MP=1580, MR=448450)
+  >> AUC snapshot at 30 queries: PR-AUC(trapz) = 0.0665; AP = 0.0677
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450040 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:05:45] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.21s
+[Query   40] Acc=0.9960  Loss(test MP=2.2617 MR=0.0197 avg=1.1407)  labeled=450040 (MP=1580, MR=448460)
+  >> AUC snapshot at 40 queries: PR-AUC(trapz) = 0.0671; AP = 0.0682
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450050 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:05:51] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.18s
+[Query   50] Acc=0.9962  Loss(test MP=2.2577 MR=0.0187 avg=1.1382)  labeled=450050 (MP=1580, MR=448470)
+  >> AUC snapshot at 50 queries: PR-AUC(trapz) = 0.0759; AP = 0.0778
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450060 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:05:58] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.00s
+  [Timing] Evaluation: 1.19s
+[Query   60] Acc=0.9959  Loss(test MP=2.2766 MR=0.0188 avg=1.1477)  labeled=450060 (MP=1580, MR=448480)
+  >> AUC snapshot at 60 queries: PR-AUC(trapz) = 0.0716; AP = 0.0734
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450070 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:04] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.21s
+[Query   70] Acc=0.9961  Loss(test MP=2.2763 MR=0.0184 avg=1.1474)  labeled=450070 (MP=1580, MR=448490)
+  >> AUC snapshot at 70 queries: PR-AUC(trapz) = 0.0741; AP = 0.0758
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450080 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:10] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.23s
+[Query   80] Acc=0.9961  Loss(test MP=2.1761 MR=0.0186 avg=1.0974)  labeled=450080 (MP=1580, MR=448500)
+  >> AUC snapshot at 80 queries: PR-AUC(trapz) = 0.0825; AP = 0.0837
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450090 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:16] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.22s
+[Query   90] Acc=0.9962  Loss(test MP=2.1847 MR=0.0176 avg=1.1011)  labeled=450090 (MP=1580, MR=448510)
+  >> AUC snapshot at 90 queries: PR-AUC(trapz) = 0.0894; AP = 0.0911
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450100 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:22] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.14s
+[Query  100] Acc=0.9961  Loss(test MP=2.1758 MR=0.0179 avg=1.0969)  labeled=450100 (MP=1580, MR=448520)
+  >> AUC snapshot at 100 queries: PR-AUC(trapz) = 0.0892; AP = 0.0910
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450110 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:28] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.21s
+[Query  110] Acc=0.9964  Loss(test MP=2.2228 MR=0.0171 avg=1.1199)  labeled=450110 (MP=1580, MR=448530)
+  >> AUC snapshot at 110 queries: PR-AUC(trapz) = 0.0827; AP = 0.0838
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450120 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:34] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.00s
+  [Timing] Evaluation: 1.20s
+[Query  120] Acc=0.9962  Loss(test MP=2.2461 MR=0.0177 avg=1.1319)  labeled=450120 (MP=1580, MR=448540)
+  >> AUC snapshot at 120 queries: PR-AUC(trapz) = 0.0757; AP = 0.0769
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450130 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:40] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.14s
+[Query  130] Acc=0.9963  Loss(test MP=2.2141 MR=0.0176 avg=1.1159)  labeled=450130 (MP=1580, MR=448550)
+  >> AUC snapshot at 130 queries: PR-AUC(trapz) = 0.0814; AP = 0.0843
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450140 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:46] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.20s
+[Query  140] Acc=0.9961  Loss(test MP=2.1461 MR=0.0180 avg=1.0821)  labeled=450140 (MP=1580, MR=448560)
+  >> AUC snapshot at 140 queries: PR-AUC(trapz) = 0.0844; AP = 0.0858
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450150 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:06:52] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.15s
+[Query  150] Acc=0.9962  Loss(test MP=2.1299 MR=0.0176 avg=1.0737)  labeled=450150 (MP=1580, MR=448570)
+  >> AUC snapshot at 150 queries: PR-AUC(trapz) = 0.0932; AP = 0.0961
+
+Trial 1 runtime: 228.2s  (data loading: 17.7s)
+
+Saved weight distribution plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/weight_distribution.png
+Saved PR curve plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/pr_curve_mp.png.
+
+============================================================
+Trial 2 / 5  (seed=43)
+============================================================
+  [Voronoi-Hard] Computing sample weights (450000 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 115.48s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:00] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.23s
+[Query    0] Acc=0.9941  Loss(test MP=2.4924 MR=0.0253 avg=1.2589)  labeled=450000 (MP=1580, MR=448420)
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450010 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:06] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.24s
+[Query   10] Acc=0.9954  Loss(test MP=2.3837 MR=0.0219 avg=1.2028)  labeled=450010 (MP=1580, MR=448430)
+  >> AUC snapshot at 10 queries: PR-AUC(trapz) = 0.0590; AP = 0.0607
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.38s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450020 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:12] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.22s
+[Query   20] Acc=0.9955  Loss(test MP=2.3262 MR=0.0214 avg=1.1738)  labeled=450020 (MP=1580, MR=448440)
+  >> AUC snapshot at 20 queries: PR-AUC(trapz) = 0.0576; AP = 0.0586
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450030 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:18] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.20s
+[Query   30] Acc=0.9960  Loss(test MP=2.3491 MR=0.0201 avg=1.1846)  labeled=450030 (MP=1580, MR=448450)
+  >> AUC snapshot at 30 queries: PR-AUC(trapz) = 0.0639; AP = 0.0648
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450040 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:24] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.20s
+[Query   40] Acc=0.9960  Loss(test MP=2.4113 MR=0.0193 avg=1.2153)  labeled=450040 (MP=1580, MR=448460)
+  >> AUC snapshot at 40 queries: PR-AUC(trapz) = 0.0569; AP = 0.0579
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450050 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:30] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.15s
+[Query   50] Acc=0.9959  Loss(test MP=2.3175 MR=0.0196 avg=1.1686)  labeled=450050 (MP=1580, MR=448470)
+  >> AUC snapshot at 50 queries: PR-AUC(trapz) = 0.0579; AP = 0.0587
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450060 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:36] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.15s
+[Query   60] Acc=0.9959  Loss(test MP=2.3275 MR=0.0194 avg=1.1735)  labeled=450060 (MP=1580, MR=448480)
+  >> AUC snapshot at 60 queries: PR-AUC(trapz) = 0.0611; AP = 0.0619
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450070 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:42] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.17s
+[Query   70] Acc=0.9962  Loss(test MP=2.2887 MR=0.0179 avg=1.1533)  labeled=450070 (MP=1580, MR=448490)
+  >> AUC snapshot at 70 queries: PR-AUC(trapz) = 0.0666; AP = 0.0675
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450080 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:48] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.14s
+[Query   80] Acc=0.9961  Loss(test MP=2.2485 MR=0.0181 avg=1.1333)  labeled=450080 (MP=1580, MR=448500)
+  >> AUC snapshot at 80 queries: PR-AUC(trapz) = 0.0672; AP = 0.0681
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450090 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:09:54] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.00s
+  [Timing] Evaluation: 1.21s
+[Query   90] Acc=0.9963  Loss(test MP=2.2380 MR=0.0172 avg=1.1276)  labeled=450090 (MP=1580, MR=448510)
+  >> AUC snapshot at 90 queries: PR-AUC(trapz) = 0.0767; AP = 0.0778
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450100 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:10:00] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.00s
+  [Timing] Evaluation: 1.14s
+[Query  100] Acc=0.9962  Loss(test MP=2.2248 MR=0.0173 avg=1.1211)  labeled=450100 (MP=1580, MR=448520)
+  >> AUC snapshot at 100 queries: PR-AUC(trapz) = 0.0754; AP = 0.0765
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450110 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:10:06] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.21s
+[Query  110] Acc=0.9960  Loss(test MP=2.1833 MR=0.0176 avg=1.1005)  labeled=450110 (MP=1580, MR=448530)
+  >> AUC snapshot at 110 queries: PR-AUC(trapz) = 0.0713; AP = 0.0724
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450120 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:10:12] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.18s
+[Query  120] Acc=0.9964  Loss(test MP=2.2180 MR=0.0167 avg=1.1174)  labeled=450120 (MP=1580, MR=448540)
+  >> AUC snapshot at 120 queries: PR-AUC(trapz) = 0.0757; AP = 0.0766
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450130 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:10:18] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.18s
+[Query  130] Acc=0.9962  Loss(test MP=2.1277 MR=0.0172 avg=1.0724)  labeled=450130 (MP=1580, MR=448550)
+  >> AUC snapshot at 130 queries: PR-AUC(trapz) = 0.0795; AP = 0.0824
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450140 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:10:24] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.16s
+[Query  140] Acc=0.9963  Loss(test MP=2.2023 MR=0.0166 avg=1.1094)  labeled=450140 (MP=1580, MR=448560)
+  >> AUC snapshot at 140 queries: PR-AUC(trapz) = 0.0785; AP = 0.0798
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450150 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:10:30] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.15s
+[Query  150] Acc=0.9963  Loss(test MP=2.2393 MR=0.0165 avg=1.1279)  labeled=450150 (MP=1580, MR=448570)
+  >> AUC snapshot at 150 queries: PR-AUC(trapz) = 0.0728; AP = 0.0738
+
+============================================================
+Trial 3 / 5  (seed=44)
+============================================================
+  [Voronoi-Hard] Computing sample weights (450000 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 115.52s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:12:30] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.20s
+[Query    0] Acc=0.9939  Loss(test MP=2.4242 MR=0.0259 avg=1.2251)  labeled=450000 (MP=1580, MR=448420)
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450010 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:12:35] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.22s
+[Query   10] Acc=0.9951  Loss(test MP=2.3413 MR=0.0228 avg=1.1820)  labeled=450010 (MP=1580, MR=448430)
+  >> AUC snapshot at 10 queries: PR-AUC(trapz) = 0.0607; AP = 0.0618
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450020 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:12:41] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.02s
+  [Timing] Evaluation: 1.19s
+[Query   20] Acc=0.9955  Loss(test MP=2.2865 MR=0.0210 avg=1.1538)  labeled=450020 (MP=1580, MR=448440)
+  >> AUC snapshot at 20 queries: PR-AUC(trapz) = 0.0698; AP = 0.0708
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.38s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450030 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:12:47] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.21s
+[Query   30] Acc=0.9959  Loss(test MP=2.1832 MR=0.0197 avg=1.1015)  labeled=450030 (MP=1580, MR=448450)
+  >> AUC snapshot at 30 queries: PR-AUC(trapz) = 0.0746; AP = 0.0757
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450040 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:12:53] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.21s
+[Query   40] Acc=0.9964  Loss(test MP=2.3095 MR=0.0180 avg=1.1638)  labeled=450040 (MP=1580, MR=448460)
+  >> AUC snapshot at 40 queries: PR-AUC(trapz) = 0.0699; AP = 0.0711
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450050 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:12:59] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.08s
+  [Timing] Evaluation: 1.20s
+[Query   50] Acc=0.9966  Loss(test MP=2.2382 MR=0.0174 avg=1.1278)  labeled=450050 (MP=1580, MR=448470)
+  >> AUC snapshot at 50 queries: PR-AUC(trapz) = 0.0845; AP = 0.0865
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450060 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:05] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.19s
+[Query   60] Acc=0.9964  Loss(test MP=2.1865 MR=0.0177 avg=1.1021)  labeled=450060 (MP=1580, MR=448480)
+  >> AUC snapshot at 60 queries: PR-AUC(trapz) = 0.0914; AP = 0.0935
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450070 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:11] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.21s
+[Query   70] Acc=0.9964  Loss(test MP=2.1386 MR=0.0173 avg=1.0779)  labeled=450070 (MP=1580, MR=448490)
+  >> AUC snapshot at 70 queries: PR-AUC(trapz) = 0.0937; AP = 0.0949
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450080 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:17] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.20s
+[Query   80] Acc=0.9967  Loss(test MP=2.1664 MR=0.0159 avg=1.0912)  labeled=450080 (MP=1580, MR=448500)
+  >> AUC snapshot at 80 queries: PR-AUC(trapz) = 0.0960; AP = 0.0977
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450090 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:23] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.20s
+[Query   90] Acc=0.9966  Loss(test MP=2.1402 MR=0.0163 avg=1.0783)  labeled=450090 (MP=1580, MR=448510)
+  >> AUC snapshot at 90 queries: PR-AUC(trapz) = 0.0903; AP = 0.0916
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450100 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:30] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.07s
+  [Timing] Evaluation: 1.20s
+[Query  100] Acc=0.9968  Loss(test MP=2.1998 MR=0.0154 avg=1.1076)  labeled=450100 (MP=1580, MR=448520)
+  >> AUC snapshot at 100 queries: PR-AUC(trapz) = 0.0918; AP = 0.0932
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450110 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:36] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.21s
+[Query  110] Acc=0.9968  Loss(test MP=2.2311 MR=0.0155 avg=1.1233)  labeled=450110 (MP=1580, MR=448530)
+  >> AUC snapshot at 110 queries: PR-AUC(trapz) = 0.0877; AP = 0.0890
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450120 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:42] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.22s
+[Query  120] Acc=0.9969  Loss(test MP=2.2344 MR=0.0149 avg=1.1247)  labeled=450120 (MP=1580, MR=448540)
+  >> AUC snapshot at 120 queries: PR-AUC(trapz) = 0.0924; AP = 0.0953
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450130 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:48] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.07s
+  [Timing] Evaluation: 1.20s
+[Query  130] Acc=0.9966  Loss(test MP=2.1528 MR=0.0155 avg=1.0842)  labeled=450130 (MP=1580, MR=448550)
+  >> AUC snapshot at 130 queries: PR-AUC(trapz) = 0.1003; AP = 0.1023
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450140 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:13:54] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.21s
+[Query  140] Acc=0.9966  Loss(test MP=2.1574 MR=0.0156 avg=1.0865)  labeled=450140 (MP=1580, MR=448560)
+  >> AUC snapshot at 140 queries: PR-AUC(trapz) = 0.0964; AP = 0.0981
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450150 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:14:00] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.21s
+[Query  150] Acc=0.9967  Loss(test MP=2.1864 MR=0.0153 avg=1.1009)  labeled=450150 (MP=1580, MR=448570)
+  >> AUC snapshot at 150 queries: PR-AUC(trapz) = 0.0895; AP = 0.0916
+
+============================================================
+Trial 4 / 5  (seed=45)
+============================================================
+  [Voronoi-Hard] Computing sample weights (450000 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 115.82s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:00] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.08s
+  [Timing] Evaluation: 1.21s
+[Query    0] Acc=0.9940  Loss(test MP=2.3607 MR=0.0259 avg=1.1933)  labeled=450000 (MP=1580, MR=448420)
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.38s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450010 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:05] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.23s
+[Query   10] Acc=0.9948  Loss(test MP=2.3415 MR=0.0240 avg=1.1827)  labeled=450010 (MP=1580, MR=448430)
+  >> AUC snapshot at 10 queries: PR-AUC(trapz) = 0.0518; AP = 0.0547
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450020 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:11] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.21s
+[Query   20] Acc=0.9958  Loss(test MP=2.3547 MR=0.0210 avg=1.1878)  labeled=450020 (MP=1580, MR=448440)
+  >> AUC snapshot at 20 queries: PR-AUC(trapz) = 0.0629; AP = 0.0658
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450030 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:18] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.20s
+[Query   30] Acc=0.9960  Loss(test MP=2.2756 MR=0.0199 avg=1.1477)  labeled=450030 (MP=1580, MR=448450)
+  >> AUC snapshot at 30 queries: PR-AUC(trapz) = 0.0724; AP = 0.0753
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450040 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:24] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.20s
+[Query   40] Acc=0.9964  Loss(test MP=2.2857 MR=0.0183 avg=1.1520)  labeled=450040 (MP=1580, MR=448460)
+  >> AUC snapshot at 40 queries: PR-AUC(trapz) = 0.0793; AP = 0.0823
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450050 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:30] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.21s
+[Query   50] Acc=0.9962  Loss(test MP=2.1443 MR=0.0187 avg=1.0815)  labeled=450050 (MP=1580, MR=448470)
+  >> AUC snapshot at 50 queries: PR-AUC(trapz) = 0.0872; AP = 0.0884
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450060 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:36] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.22s
+[Query   60] Acc=0.9965  Loss(test MP=2.1845 MR=0.0179 avg=1.1012)  labeled=450060 (MP=1580, MR=448480)
+  >> AUC snapshot at 60 queries: PR-AUC(trapz) = 0.0890; AP = 0.0919
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.38s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450070 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:42] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.20s
+[Query   70] Acc=0.9966  Loss(test MP=2.1769 MR=0.0167 avg=1.0968)  labeled=450070 (MP=1580, MR=448490)
+  >> AUC snapshot at 70 queries: PR-AUC(trapz) = 0.0943; AP = 0.0958
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450080 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:48] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.21s
+[Query   80] Acc=0.9968  Loss(test MP=2.2114 MR=0.0160 avg=1.1137)  labeled=450080 (MP=1580, MR=448500)
+  >> AUC snapshot at 80 queries: PR-AUC(trapz) = 0.0918; AP = 0.0948
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450090 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:16:54] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.20s
+[Query   90] Acc=0.9966  Loss(test MP=2.2367 MR=0.0159 avg=1.1263)  labeled=450090 (MP=1580, MR=448510)
+  >> AUC snapshot at 90 queries: PR-AUC(trapz) = 0.0924; AP = 0.0953
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450100 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:17:00] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.21s
+[Query  100] Acc=0.9968  Loss(test MP=2.2012 MR=0.0158 avg=1.1085)  labeled=450100 (MP=1580, MR=448520)
+  >> AUC snapshot at 100 queries: PR-AUC(trapz) = 0.0931; AP = 0.0961
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450110 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:17:06] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.20s
+[Query  110] Acc=0.9968  Loss(test MP=2.1253 MR=0.0155 avg=1.0704)  labeled=450110 (MP=1580, MR=448530)
+  >> AUC snapshot at 110 queries: PR-AUC(trapz) = 0.1087; AP = 0.1117
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450120 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:17:12] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.19s
+[Query  120] Acc=0.9969  Loss(test MP=2.1128 MR=0.0152 avg=1.0640)  labeled=450120 (MP=1580, MR=448540)
+  >> AUC snapshot at 120 queries: PR-AUC(trapz) = 0.1147; AP = 0.1177
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450130 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:17:18] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.20s
+[Query  130] Acc=0.9968  Loss(test MP=2.1007 MR=0.0155 avg=1.0581)  labeled=450130 (MP=1580, MR=448550)
+  >> AUC snapshot at 130 queries: PR-AUC(trapz) = 0.1069; AP = 0.1099
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450140 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:17:25] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.07s
+  [Timing] Evaluation: 1.21s
+[Query  140] Acc=0.9966  Loss(test MP=2.0964 MR=0.0156 avg=1.0560)  labeled=450140 (MP=1580, MR=448560)
+  >> AUC snapshot at 140 queries: PR-AUC(trapz) = 0.1114; AP = 0.1129
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450150 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:17:31] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.20s
+[Query  150] Acc=0.9968  Loss(test MP=2.1305 MR=0.0153 avg=1.0729)  labeled=450150 (MP=1580, MR=448570)
+  >> AUC snapshot at 150 queries: PR-AUC(trapz) = 0.1143; AP = 0.1158
+
+============================================================
+Trial 5 / 5  (seed=46)
+============================================================
+  [Voronoi-Hard] Computing sample weights (450000 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 115.82s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:19:31] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.07s
+  [Timing] Evaluation: 1.21s
+[Query    0] Acc=0.9940  Loss(test MP=2.4898 MR=0.0248 avg=1.2573)  labeled=450000 (MP=1580, MR=448420)
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450010 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:19:36] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.20s
+[Query   10] Acc=0.9955  Loss(test MP=2.3471 MR=0.0214 avg=1.1843)  labeled=450010 (MP=1580, MR=448430)
+  >> AUC snapshot at 10 queries: PR-AUC(trapz) = 0.0578; AP = 0.0588
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.38s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450020 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:19:42] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.20s
+[Query   20] Acc=0.9956  Loss(test MP=2.2734 MR=0.0210 avg=1.1472)  labeled=450020 (MP=1580, MR=448440)
+  >> AUC snapshot at 20 queries: PR-AUC(trapz) = 0.0653; AP = 0.0670
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450030 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:19:48] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.21s
+[Query   30] Acc=0.9958  Loss(test MP=2.1468 MR=0.0198 avg=1.0833)  labeled=450030 (MP=1580, MR=448450)
+  >> AUC snapshot at 30 queries: PR-AUC(trapz) = 0.0784; AP = 0.0812
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450040 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:19:54] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.21s
+[Query   40] Acc=0.9962  Loss(test MP=2.2461 MR=0.0187 avg=1.1324)  labeled=450040 (MP=1580, MR=448460)
+  >> AUC snapshot at 40 queries: PR-AUC(trapz) = 0.0780; AP = 0.0797
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450050 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:00] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.20s
+[Query   50] Acc=0.9966  Loss(test MP=2.2548 MR=0.0176 avg=1.1362)  labeled=450050 (MP=1580, MR=448470)
+  >> AUC snapshot at 50 queries: PR-AUC(trapz) = 0.0724; AP = 0.0736
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.37s
+  [Voronoi-Hard] Computing sample weights (450060 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:06] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.06s
+  [Timing] Evaluation: 1.20s
+[Query   60] Acc=0.9965  Loss(test MP=2.1839 MR=0.0173 avg=1.1006)  labeled=450060 (MP=1580, MR=448480)
+  >> AUC snapshot at 60 queries: PR-AUC(trapz) = 0.0768; AP = 0.0782
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.37s
+  [Timing] wasserstein query selection: 1.38s
+  [Voronoi-Hard] Computing sample weights (450070 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:12] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.05s
+  [Timing] Evaluation: 1.19s
+[Query   70] Acc=0.9964  Loss(test MP=2.1981 MR=0.0174 avg=1.1077)  labeled=450070 (MP=1580, MR=448490)
+  >> AUC snapshot at 70 queries: PR-AUC(trapz) = 0.0724; AP = 0.0737
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450080 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:19] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.19s
+[Query   80] Acc=0.9965  Loss(test MP=2.1409 MR=0.0170 avg=1.0790)  labeled=450080 (MP=1580, MR=448500)
+  >> AUC snapshot at 80 queries: PR-AUC(trapz) = 0.0840; AP = 0.0854
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450090 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:25] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.19s
+[Query   90] Acc=0.9964  Loss(test MP=2.2194 MR=0.0171 avg=1.1183)  labeled=450090 (MP=1580, MR=448510)
+  >> AUC snapshot at 90 queries: PR-AUC(trapz) = 0.0729; AP = 0.0743
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450100 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:31] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.18s
+[Query  100] Acc=0.9963  Loss(test MP=2.1042 MR=0.0175 avg=1.0609)  labeled=450100 (MP=1580, MR=448520)
+  >> AUC snapshot at 100 queries: PR-AUC(trapz) = 0.0783; AP = 0.0797
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450110 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:37] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.18s
+[Query  110] Acc=0.9964  Loss(test MP=2.1721 MR=0.0169 avg=1.0945)  labeled=450110 (MP=1580, MR=448530)
+  >> AUC snapshot at 110 queries: PR-AUC(trapz) = 0.0774; AP = 0.0787
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450120 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:43] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.03s
+  [Timing] Evaluation: 1.17s
+[Query  120] Acc=0.9963  Loss(test MP=2.1404 MR=0.0172 avg=1.0788)  labeled=450120 (MP=1580, MR=448540)
+  >> AUC snapshot at 120 queries: PR-AUC(trapz) = 0.0828; AP = 0.0857
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450130 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:49] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.01s
+  [Timing] Evaluation: 1.14s
+[Query  130] Acc=0.9964  Loss(test MP=2.1403 MR=0.0166 avg=1.0785)  labeled=450130 (MP=1580, MR=448550)
+  >> AUC snapshot at 130 queries: PR-AUC(trapz) = 0.0839; AP = 0.0850
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.36s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450140 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.43s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:20:55] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.18s
+[Query  140] Acc=0.9966  Loss(test MP=2.1927 MR=0.0162 avg=1.1045)  labeled=450140 (MP=1580, MR=448560)
+  >> AUC snapshot at 140 queries: PR-AUC(trapz) = 0.0843; AP = 0.0872
+  [GPU] Wasserstein coupling: pool_size=45000, selecting 10
+  [Timing] Wasserstein plan build: 1.35s
+  [Timing] wasserstein query selection: 1.36s
+  [Voronoi-Hard] Computing sample weights (450150 labeled vs 4821583 pool)...
+  [Timing] Voronoi-hard weights: 0.44s
+  [TrainWeights] class_balance=ratio mode=fixed target=10000 total=10000 MP=99.0099 MR=9900.99
+/home/bgg7950/.local/lib/python3.10/site-packages/xgboost/training.py:200: UserWarning: [12:21:01] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+  [Timing] Classifier train: 2.04s
+  [Timing] Evaluation: 1.19s
+[Query  150] Acc=0.9967  Loss(test MP=2.2250 MR=0.0156 avg=1.1203)  labeled=450150 (MP=1580, MR=448570)
+  >> AUC snapshot at 150 queries: PR-AUC(trapz) = 0.0841; AP = 0.0870
+
+Total runtime (5 trial(s)): 1077.1s
+Saved AUC trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/auc_trials.png
+Saved average-precision trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/average_precision_trials.png
+Saved MP fraction trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/mp_fraction_trials.png
+Saved MP test loss trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/test_loss_MP_trials.png
+Saved MR test loss trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/test_loss_MR_trials.png
+Saved weight-stat trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/weight_l2_norm_trials.png
+Saved weight-stat trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/weight_l2_sq_trials.png
+Saved weight-stat trials plot to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/weight_effective_sample_size_trials.png
+
+All outputs saved to Jul24-wass-lambda/al_xgb_wasserstein_hard_150_lambda_0_eval10/
+
+============================================================
+  Generating lambda=0 vs regularized Wasserstein comparisons
+============================================================
+  [Warning] Jul24-wass-lambda/al_xgb_wasserstein_l2_150_lambda_300/auc_trials.json contains no average-precision data — skipping.
+  [Warning] Jul24-wass-lambda/al_xgb_wasserstein_l2_150_lambda_1000/auc_trials.json contains no average-precision data — skipping.
+  [Warning] Jul24-wass-lambda/al_xgb_wasserstein_l2_150_lambda_3000/auc_trials.json contains no average-precision data — skipping.
+  [Warning] Jul24-wass-lambda/al_xgb_wasserstein_l2_150_lambda_10000/auc_trials.json contains no average-precision data — skipping.
+[Error] Number of --labels (5) does not match number of valid experiments (1).
