@@ -78,7 +78,7 @@ def find_json_dirs(base_dir: Path) -> list[Path]:
     return sorted(found, key=natural_sort_key)
 
 
-def load_experiment(directory: Path) -> dict | None:
+def load_experiment(directory: Path, metric: str = "pr_auc") -> dict | None:
     """
     Load auc_trials.json from *directory*.
 
@@ -103,11 +103,17 @@ def load_experiment(directory: Path) -> dict | None:
         print(f"  [Warning] Failed to parse {json_path}: {e} — skipping.", file=sys.stderr)
         return None
 
-    query_points = data.get("auc_query_points", [])
-    trial_aucs   = data.get("trial_aucs", [])
+    if metric == "average_precision":
+        query_points = data.get("average_precision_query_points") or data.get("auc_query_points", [])
+        trial_aucs = data.get("trial_average_precisions", [])
+        metric_label = "average-precision"
+    else:
+        query_points = data.get("auc_query_points", [])
+        trial_aucs = data.get("trial_aucs", [])
+        metric_label = "PR-AUC"
 
     if not query_points or not trial_aucs:
-        print(f"  [Warning] {json_path} contains no data — skipping.", file=sys.stderr)
+        print(f"  [Warning] {json_path} contains no {metric_label} data — skipping.", file=sys.stderr)
         return None
 
     # Pad shorter trials with NaN in case a trial was interrupted early
@@ -128,6 +134,7 @@ def load_experiment(directory: Path) -> dict | None:
         "std_auc":      np.nanstd(padded, axis=0),
         "n_trials":     len(trial_aucs),
         "has_mp_data":  False,
+        "metric":       metric,
     }
 
     # --- MP count (optional field, absent in older JSON files) ---
@@ -162,6 +169,7 @@ def plot_comparison(
     figsize: tuple[float, float] = DEFAULT_FIGSIZE,
     title: str = "",
     cmap_runs: str | None = None,
+    metric: str = "pr_auc",
 ) -> None:
     """Plot all experiments on the same axes with mean ± 1σ shading."""
 
@@ -216,7 +224,8 @@ def plot_comparison(
 
     # Axis labels, title, grid
     ax.set_xlabel("Number of Queries", fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_ylabel("PR-AUC (MP Class)", fontsize=AXIS_LABEL_FONTSIZE)
+    metric_name = "Average Precision" if metric == "average_precision" else "PR-AUC (trapz)"
+    ax.set_ylabel(f"{metric_name} (MP Class)", fontsize=AXIS_LABEL_FONTSIZE)
     if title:
         ax.set_title(title, fontsize=TITLE_FONTSIZE, fontweight="bold", pad=10)
 
@@ -237,8 +246,10 @@ def plot_comparison(
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.tick_params(labelsize=TICK_FONTSIZE)
 
-    # Print a summary table of final AUC values
-    print(f"\n{'Experiment':<35} {'n_trials':>8} {'Final AUC Mean':>14} {'Final AUC Std':>13}")
+    # Print a summary table of final metric values
+    mean_col = f"Final {metric_name} Mean"
+    std_col = f"Final {metric_name} Std"
+    print(f"\n{'Experiment':<35} {'n_trials':>8} {mean_col:>24} {std_col:>23}")
     print("-" * 74)
     for label, exp in zip(labels, experiments):
         print(
@@ -381,6 +392,13 @@ def parse_args() -> argparse.Namespace:
              "to color the different experiment lines smoothly. Perfect for parameter sweeps. "
              "Use 'none' to disable and use the discrete color palette (default: coolwarm).",
     )
+    p.add_argument(
+        "--metric",
+        choices=["pr_auc", "average_precision"],
+        default="pr_auc",
+        help="Metric to plot from auc_trials.json. pr_auc is the legacy trapezoidal "
+             "Precision-Recall AUC; average_precision uses sklearn average_precision_score.",
+    )
     return p.parse_args()
 
 
@@ -409,7 +427,7 @@ def main() -> None:
     experiments = []
     valid_dirs  = []
     for d in directories:
-        exp = load_experiment(d)
+        exp = load_experiment(d, metric=args.metric)
         if exp is not None:
             experiments.append(exp)
             valid_dirs.append(d)
@@ -443,6 +461,7 @@ def main() -> None:
         figsize=tuple(args.figsize),
         title=args.title,
         cmap_runs=args.cmap_runs,
+        metric=args.metric,
     )
 
     # 5. Plot MP count comparison (auto-generated alongside AUC plot)

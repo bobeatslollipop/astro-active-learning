@@ -11,7 +11,9 @@ FULL_DATA=bp_rp_lamost_normalized.h5
 FEH_THRESHOLD=-2.0
 TOTAL_QUERIES=150
 EVAL_EVERY=10
-LAMBDA_MP=0.01
+LAMBDA_MP=1
+TRAIN_WEIGHT_SUM_MODE=initial_labeled
+EVAL_SOURCE=full_heldout
 WASS_POOL=45000
 C=10000.0
 EVAL_SIZE=500000
@@ -38,12 +40,8 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgboost_kmedianpp_l2_lambda_sweep_${TOTAL_QUERIES}q_5seeds"
-OLD_RESULT_ROOT="xgboost_kmedianpp_l2_lambda_sweep_${TOTAL_QUERIES}q_10seeds"
+RESULT_ROOT="xgb_kmedianpp_lambdaMP1_fullheldout_initialweightsum_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
 UNIFORM_OUT_DIR="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_inf"
-
-# Overwrite previous kmedian++ lambda sweep records for this experiment family.
-rm -rf "$RESULT_ROOT" "$OLD_RESULT_ROOT"
 
 for lambda in "${LAMBDAS[@]}"; do
   out_dir="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${lambda}"
@@ -63,12 +61,14 @@ for lambda in "${LAMBDAS[@]}"; do
     --reweighting     voronoi_l2 \
     --soft-topk       "$SOFT_TOPK" \
     --reweight-pool-size "$REWEIGHT_POOL" \
-	    --reweight-lambda "$lambda" \
-	    --voronoi-l2-max-iter "$VORONOI_L2_MAX_ITER" \
-	    --voronoi-l2-initial-max-iter "$VORONOI_L2_INITIAL_MAX_ITER" \
-	    --total-queries   "$TOTAL_QUERIES" \
+    --reweight-lambda "$lambda" \
+    --voronoi-l2-max-iter "$VORONOI_L2_MAX_ITER" \
+    --voronoi-l2-initial-max-iter "$VORONOI_L2_INITIAL_MAX_ITER" \
+    --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \
     --lambda-MP       "$LAMBDA_MP" \
+    --train-weight-sum-mode "$TRAIN_WEIGHT_SUM_MODE" \
+    --eval-source     "$EVAL_SOURCE" \
     --wass-pool-size  "$WASS_POOL" \
     --C               "$C" \
     --eval-size       "$EVAL_SIZE" \
@@ -87,7 +87,7 @@ for lambda in "${LAMBDAS[@]}"; do
     --xgb-tree-method "$XGB_TREE_METHOD" \
     --xgb-device "$XGB_DEVICE" \
     --xgb-n-jobs "$XGB_N_JOBS" \
-	    --out-dir "$out_dir"
+    --out-dir "$out_dir"
 done
 
 echo ""
@@ -107,6 +107,8 @@ python active_learning.py \
   --total-queries   "$TOTAL_QUERIES" \
   --eval-every      "$EVAL_EVERY" \
   --lambda-MP       "$LAMBDA_MP" \
+  --train-weight-sum-mode "$TRAIN_WEIGHT_SUM_MODE" \
+  --eval-source     "$EVAL_SOURCE" \
   --wass-pool-size  "$WASS_POOL" \
   --C               "$C" \
   --eval-size       "$EVAL_SIZE" \
@@ -129,7 +131,7 @@ python active_learning.py \
 
 echo ""
 echo "============================================================"
-echo "  Generating kmedian++ Voronoi-L2 lambda-sweep PR-AUC comparison"
+echo "  Generating kmedian++ Voronoi-L2 lambda-sweep AP comparison"
 echo "============================================================"
 
 python compare_auc_trials.py \
@@ -138,7 +140,19 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   "$UNIFORM_OUT_DIR" \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_auc.png" \
+  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_average_precision.png" \
+  --metric average_precision \
+  --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)" \
+  --cmap-runs viridis
+
+python compare_auc_trials.py \
+  "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
+  "$UNIFORM_OUT_DIR" \
+  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_pr_auc_trapz.png" \
+  --metric pr_auc \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)" \
   --cmap-runs viridis
 

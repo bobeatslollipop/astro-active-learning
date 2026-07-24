@@ -2304,12 +2304,18 @@ STRATEGIES = {
 
 # ── Training & Evaluation ────────────────────────────────
 
-TRAIN_WEIGHT_SUM = 10_000.0
+DEFAULT_TRAIN_WEIGHT_SUM = 10_000.0
 
 
 def _class_ratio_sample_weights(y, lambda_MP=1.0, sample_weight=None,
-                                target_sum=TRAIN_WEIGHT_SUM):
+                                target_sum=None):
     """Apply MP/MR total-weight locking while preserving within-class weights."""
+    if target_sum is None:
+        raise ValueError("target_sum must be resolved explicitly before training.")
+    target_sum = float(target_sum)
+    if not np.isfinite(target_sum) or target_sum <= 0:
+        raise ValueError(f"target_sum must be positive and finite, got {target_sum!r}.")
+
     n_MP, n_MR = int(np.sum(y == 0)), int(np.sum(y == 1))
 
     if sample_weight is not None:
@@ -2335,7 +2341,53 @@ def _class_ratio_sample_weights(y, lambda_MP=1.0, sample_weight=None,
     return final_w
 
 
-def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None):
+def _resolve_train_weight_target_sum(mode, fixed_sum, initial_labeled_count, current_labeled_count):
+    """Resolve the training sample-weight total for the current snapshot."""
+    if mode == "fixed":
+        return float(fixed_sum)
+    if mode == "initial_labeled":
+        return float(initial_labeled_count)
+    if mode == "current_labeled":
+        return float(current_labeled_count)
+    raise ValueError(f"Unknown train weight sum mode: {mode!r}")
+
+
+def _final_weight_summary(y, final_w, target_sum, lambda_MP, *, rtol=1e-6):
+    """Validate and summarize final class-balanced training weights."""
+    y = np.asarray(y)
+    final_w = np.asarray(final_w, dtype=np.float64)
+    mp_sum = float(final_w[y == 0].sum())
+    mr_sum = float(final_w[y == 1].sum())
+    total = float(final_w.sum())
+    target_sum = float(target_sum)
+    atol = max(1e-6, abs(target_sum) * 1e-8)
+    if not np.isclose(total, target_sum, rtol=rtol, atol=atol):
+        raise RuntimeError(
+            f"Final training weight total {total:.12g} does not match target "
+            f"{target_sum:.12g}."
+        )
+    if np.isclose(float(lambda_MP), 1.0, rtol=rtol, atol=1e-12):
+        half = target_sum / 2.0
+        if not np.isclose(mp_sum, half, rtol=rtol, atol=atol):
+            raise RuntimeError(
+                f"MP final training weight total {mp_sum:.12g} does not match "
+                f"target/2 {half:.12g}."
+            )
+        if not np.isclose(mr_sum, half, rtol=rtol, atol=atol):
+            raise RuntimeError(
+                f"MR final training weight total {mr_sum:.12g} does not match "
+                f"target/2 {half:.12g}."
+            )
+    return {
+        "train_weight_target_sum": target_sum,
+        "train_weight_actual_sum": total,
+        "train_weight_MP_sum": mp_sum,
+        "train_weight_MR_sum": mr_sum,
+    }
+
+
+def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None,
+                   target_sum=None):
     """Train logistic regression with guaranteed class weight totals.
 
     Regardless of the per-sample weights provided (e.g. Voronoi weights),
@@ -2362,7 +2414,8 @@ def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None
     # to a fixed total keeps the data-fit term comparable throughout — C then has a fixed,
     # dataset-size-independent meaning.  The class ratio and within-class
     # Voronoi corrections are unaffected (we only multiply by a scalar).
-    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight)
+    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight,
+                                          target_sum=target_sum)
 
     clf = LogisticRegression(C=C, solver="lbfgs", max_iter=2000,
                              warm_start=True)
@@ -2396,9 +2449,11 @@ class RidgeRegressionClassifier:
         return np.column_stack([1.0 - p_mr, p_mr])
 
 
-def train_ridge_classifier(X, y, lambda_MP=1.0, alpha=1.0, sample_weight=None):
+def train_ridge_classifier(X, y, lambda_MP=1.0, alpha=1.0, sample_weight=None,
+                           target_sum=None):
     """Train weighted ridge regression on targets MP=-1, MR=+1."""
-    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight)
+    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight,
+                                          target_sum=target_sum)
     X = np.asarray(X, dtype=np.float64)
     target = np.where(y == 0, -1.0, 1.0).astype(np.float64)
 
@@ -2451,7 +2506,8 @@ def train_xgboost_classifier(X, y, lambda_MP=1.0, sample_weight=None, *,
                              subsample=0.8, colsample_bytree=0.8,
                              min_child_weight=1.0, gamma=0.0,
                              reg_lambda=1.0, tree_method="hist",
-                             device="auto", n_jobs=-1, random_state=42):
+                             device="auto", n_jobs=-1, random_state=42,
+                             target_sum=None):
     """Train an XGBoost boosted-tree classifier, following Yao et al.'s model family.
 
     The paper uses XGBoost multiclass classifiers over metallicity bins.  The
@@ -2468,7 +2524,8 @@ def train_xgboost_classifier(X, y, lambda_MP=1.0, sample_weight=None, *,
             "then rerun with --model xgboost."
         ) from exc
 
-    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight)
+    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight,
+                                          target_sum=target_sum)
     params = dict(
         objective="binary:logistic",
         eval_metric="logloss",
@@ -2551,6 +2608,14 @@ def compute_pr_auc(clf, X_eval, y_eval):
     return auc(recall, precision)
 
 
+def compute_average_precision(clf, X_eval, y_eval):
+    """Compute sklearn average precision for the MP class."""
+    from sklearn.metrics import average_precision_score
+    y_true_mp = (y_eval == 0).astype(int)
+    y_scores = clf.predict_proba(X_eval)[:, 0]
+    return float(average_precision_score(y_true_mp, y_scores))
+
+
 def _save_auc_trials_plot(auc_query_points, all_trial_aucs, out_dir, n_trials):
     """Plot PR-AUC across trials with confidence region (mean ± std)."""
     # Pad any short trial lists with NaN (e.g. if clf was None at a snapshot)
@@ -2580,6 +2645,35 @@ def _save_auc_trials_plot(auc_query_points, all_trial_aucs, out_dir, n_trials):
     fig.savefig(out_file, dpi=200)
     plt.close(fig)
     print(f"Saved AUC trials plot to {out_file}")
+
+
+def _save_average_precision_trials_plot(query_points, all_trial_aps, out_dir, n_trials):
+    """Plot average precision across trials with confidence region (mean ± std)."""
+    max_len = max(len(t) for t in all_trial_aps)
+    padded = [t + [float('nan')] * (max_len - len(t)) for t in all_trial_aps]
+    aps = np.array(padded, dtype=float)
+    mean_ap = np.nanmean(aps, axis=0)
+    std_ap = np.nanstd(aps, axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(query_points, mean_ap, 'o-', color='#5A9E7A', lw=2, markersize=6,
+            label='Mean AP')
+    ax.fill_between(query_points, mean_ap - std_ap, mean_ap + std_ap,
+                    alpha=0.25, color='#5A9E7A', label='±1 std')
+
+    for t in range(n_trials):
+        ax.plot(query_points, aps[t], '-', color='#999999', alpha=0.3, lw=0.8)
+
+    ax.set_xlabel('Number of Queries', fontsize=12)
+    ax.set_ylabel('Average Precision (MP Class)', fontsize=12)
+    ax.set_title(f'Average Precision across {n_trials} Trials', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_file = os.path.join(out_dir, 'average_precision_trials.png')
+    fig.savefig(out_file, dpi=200)
+    plt.close(fig)
+    print(f"Saved average-precision trials plot to {out_file}")
 
 
 def _save_test_loss_trials_plot(eval_query_points, all_trial_test_losses, out_dir, n_trials):
@@ -2927,29 +3021,127 @@ def run_active_learning(args):
     t_load = time.perf_counter() - t0
     print(f"  Data loaded in {t_load:.1f}s")
 
-    # 2. Build pool = full minus warm-start
-    if sid_warm is not None and sid_full is not None:
-        pool_mask = ~np.isin(sid_full, sid_warm)
-    else:
-        print("  Warning: source_id unavailable; using approximate dedup.")
-        warm_set = {tuple(np.round(x, 6)) for x in X_warm}
-        pool_mask = np.array([tuple(np.round(x, 6)) not in warm_set for x in X_full])
+    # 2-3. Build evaluation set and candidate pool.
+    # Default mode preserves the historical behavior: build full-minus-warm
+    # pool first, then sample eval rows from that pool without removing them
+    # from the query candidates.  full_heldout mode creates a true held-out
+    # eval set from the full population first, then removes those rows from
+    # both warm-start training and the query pool.
+    eval_rng = np.random.RandomState(args.seed)
+    original_warm_count = len(X_warm)
+    eval_original_warm_count = 0
+    eval_warm_overlap = None
+    eval_pool_overlap = None
+    eval_source_id_mode = sid_warm is not None and sid_full is not None
 
-    X_pool, y_pool = X_full[pool_mask].copy(), y_full[pool_mask].copy()
+    if args.eval_source == "full_heldout":
+        eval_n = min(args.eval_size, len(X_full))
+        eval_idx = eval_rng.choice(len(X_full), eval_n, replace=False)
+        eval_mask_full = np.zeros(len(X_full), dtype=bool)
+        eval_mask_full[eval_idx] = True
+        X_eval, y_eval = X_full[eval_idx].copy(), y_full[eval_idx].copy()
+
+        if eval_source_id_mode:
+            sid_warm_original = sid_warm.copy()
+            eval_sids = sid_full[eval_idx]
+            eval_original_warm_count = int(np.isin(eval_sids, sid_warm_original).sum())
+
+            warm_train_mask = ~np.isin(sid_warm, eval_sids)
+            X_warm, y_warm = X_warm[warm_train_mask].copy(), y_warm[warm_train_mask].copy()
+            sid_warm_train = sid_warm[warm_train_mask]
+
+            pool_mask = (~np.isin(sid_full, sid_warm_original)) & (~np.isin(sid_full, eval_sids))
+            eval_warm_overlap = int(np.intersect1d(eval_sids, sid_warm_train).size)
+            eval_pool_overlap = int(np.intersect1d(eval_sids, sid_full[pool_mask]).size)
+        else:
+            print("  Warning: source_id unavailable; using approximate full-heldout dedup.")
+            sid_warm_original = None
+            eval_keys = {tuple(np.round(x, 6)) for x in X_eval}
+            original_warm_keys = {tuple(np.round(x, 6)) for x in X_warm}
+
+            eval_original_warm_count = sum(1 for k in eval_keys if k in original_warm_keys)
+            warm_train_mask = np.array(
+                [tuple(np.round(x, 6)) not in eval_keys for x in X_warm],
+                dtype=bool,
+            )
+            X_warm, y_warm = X_warm[warm_train_mask].copy(), y_warm[warm_train_mask].copy()
+
+            pool_not_warm = np.array(
+                [tuple(np.round(x, 6)) not in original_warm_keys for x in X_full],
+                dtype=bool,
+            )
+            pool_not_eval = np.array(
+                [tuple(np.round(x, 6)) not in eval_keys for x in X_full],
+                dtype=bool,
+            )
+            pool_mask = pool_not_warm & pool_not_eval
+            eval_warm_overlap = sum(
+                1 for x in X_warm if tuple(np.round(x, 6)) in eval_keys
+            )
+            eval_pool_overlap = sum(
+                1 for x in X_full[pool_mask] if tuple(np.round(x, 6)) in eval_keys
+            )
+
+        if eval_warm_overlap != 0 or eval_pool_overlap != 0:
+            raise RuntimeError(
+                "full_heldout eval overlap check failed: "
+                f"eval/final-warm={eval_warm_overlap}, eval/query-pool={eval_pool_overlap}."
+            )
+
+        X_pool, y_pool = X_full[pool_mask].copy(), y_full[pool_mask].copy()
+    else:
+        if eval_source_id_mode:
+            pool_mask = ~np.isin(sid_full, sid_warm)
+        else:
+            print("  Warning: source_id unavailable; using approximate dedup.")
+            warm_set = {tuple(np.round(x, 6)) for x in X_warm}
+            pool_mask = np.array([tuple(np.round(x, 6)) not in warm_set for x in X_full])
+
+        X_pool, y_pool = X_full[pool_mask].copy(), y_full[pool_mask].copy()
+        eval_n = min(args.eval_size, len(X_pool))
+        eval_idx = eval_rng.choice(len(X_pool), eval_n, replace=False)
+        X_eval, y_eval = X_pool[eval_idx], y_pool[eval_idx]
 
     # Free the full arrays (only pool & eval are needed hereafter)
     del X_full, y_full, sid_full, sid_warm
-
-    # 3. Evaluation set (fixed across all trials)
-    eval_rng = np.random.RandomState(args.seed)
-    eval_n = min(args.eval_size, len(X_pool))
-    eval_idx = eval_rng.choice(len(X_pool), eval_n, replace=False)
-    X_eval, y_eval = X_pool[eval_idx], y_pool[eval_idx]
 
     for tag, n, mp in [("Warm-start", len(X_warm), (y_warm == 0).sum()),
                        ("Pool", len(X_pool), (y_pool == 0).sum()),
                        ("Eval set", eval_n, (y_eval == 0).sum())]:
         print(f"  {tag}: {n} (MP={mp}, MR={n - mp})")
+
+    if args.eval_source == "full_heldout":
+        warm_frac = eval_original_warm_count / max(1, eval_n)
+        print(f"  Eval source: full_heldout")
+        print(f"  Eval original warm-start membership: "
+              f"{eval_original_warm_count}/{eval_n} ({warm_frac:.4%})")
+        print(f"  Eval/final warm-start overlap: {eval_warm_overlap}")
+        print(f"  Eval/query pool overlap: {eval_pool_overlap}")
+    else:
+        print("  Eval source: pool (legacy behavior; eval rows are sampled from the query pool)")
+
+    args.initial_labeled_count = int(len(X_warm) if args.strategy != "purely_random" else 0)
+    args.original_warm_start_count = int(original_warm_count)
+    args.eval_actual_size = int(eval_n)
+    args.eval_original_warm_count = int(eval_original_warm_count)
+    args.eval_original_warm_fraction = float(eval_original_warm_count / max(1, eval_n))
+    args.eval_final_warm_overlap = None if eval_warm_overlap is None else int(eval_warm_overlap)
+    args.eval_query_pool_overlap = None if eval_pool_overlap is None else int(eval_pool_overlap)
+
+    initial_target_sum = _resolve_train_weight_target_sum(
+        args.train_weight_sum_mode,
+        args.train_weight_sum,
+        args.initial_labeled_count,
+        args.initial_labeled_count,
+    )
+    if initial_target_sum <= 0:
+        raise ValueError(
+            f"Resolved initial train weight sum must be positive; got {initial_target_sum}."
+        )
+    args.initial_train_weight_target_sum = float(initial_target_sum)
+    print(f"  Train weight-sum mode: {args.train_weight_sum_mode}; "
+          f"initial labeled count={args.initial_labeled_count}; "
+          f"initial target sum={initial_target_sum:.6g}")
 
     # 4. Pre-allocate labeled arrays (reused across trials)
     max_labeled = len(X_warm) + args.total_queries
@@ -2958,7 +3150,8 @@ def run_active_learning(args):
     y_labeled = np.empty(max_labeled, dtype=np.int32)
 
     # ── Multi-trial loop ──
-    all_trial_aucs = []          # list of lists, each inner list has n_snapshots AUC values
+    all_trial_aucs = []          # legacy trapezoidal PR-AUC values
+    all_trial_average_precisions = []  # sklearn average_precision_score values
     all_trial_mp_counts = []     # list of lists, cumulative MP counts at each snapshot
     all_trial_test_losses = []   # list of lists of dicts, test losses at each eval point
     all_trial_weight_stats = []  # list of lists of reweighting concentration stats
@@ -3000,6 +3193,7 @@ def run_active_learning(args):
             X_reweight_pool = X_pool
 
         trial_aucs = []
+        trial_average_precisions = []
         trial_mp_counts = []
         trial_test_losses = []   # test losses at each eval point for this trial
         trial_weight_stats = []
@@ -3075,14 +3269,37 @@ def run_active_learning(args):
             if weight_stats is not None:
                 trial_weight_stats.append(weight_stats)
 
+            target_weight_sum = _resolve_train_weight_target_sum(
+                args.train_weight_sum_mode,
+                args.train_weight_sum,
+                args.initial_labeled_count,
+                len(yl),
+            )
+            final_train_w = _class_ratio_sample_weights(
+                yl, args.lambda_MP, sw, target_sum=target_weight_sum
+            )
+            weight_summary = _final_weight_summary(
+                yl, final_train_w, target_weight_sum, args.lambda_MP
+            )
+            print(
+                "  [TrainWeights] "
+                f"mode={args.train_weight_sum_mode} "
+                f"target={weight_summary['train_weight_target_sum']:.6g} "
+                f"total={weight_summary['train_weight_actual_sum']:.6g} "
+                f"MP={weight_summary['train_weight_MP_sum']:.6g} "
+                f"MR={weight_summary['train_weight_MR_sum']:.6g}"
+            )
+
             train_t0 = time.perf_counter()
             if args.model == "logistic":
                 clf = train_logistic(Xl, yl, args.lambda_MP, args.C,
-                                     prev_clf=prev_clf, sample_weight=sw)
+                                     prev_clf=prev_clf, sample_weight=sw,
+                                     target_sum=target_weight_sum)
             elif args.model == "ridge":
                 clf = train_ridge_classifier(Xl, yl, args.lambda_MP,
                                              alpha=args.ridge_alpha,
-                                             sample_weight=sw)
+                                             sample_weight=sw,
+                                             target_sum=target_weight_sum)
             elif args.model == "xgboost":
                 clf = train_xgboost_classifier(
                     Xl, yl, args.lambda_MP, sample_weight=sw,
@@ -3098,6 +3315,7 @@ def run_active_learning(args):
                     device=args.xgb_device,
                     n_jobs=args.xgb_n_jobs,
                     random_state=args.seed + trial,
+                    target_sum=target_weight_sum,
                 )
             else:
                 raise ValueError(f"Unknown model: {args.model}")
@@ -3109,6 +3327,8 @@ def run_active_learning(args):
 
             # Average test loss across both classes
             m["avg_test_loss"] = (m["loss_MP"] + m["loss_MR"]) / 2.0
+            m.update(weight_summary)
+            m["train_weight_sum_mode"] = args.train_weight_sum_mode
 
             # Track test losses for cross-trial plotting
             trial_test_losses.append({
@@ -3175,20 +3395,25 @@ def run_active_learning(args):
             if queried in auc_query_set:
                 if clf is not None:
                     auc_val = compute_pr_auc(clf, X_eval, y_eval)
-                    print(f"  >> AUC snapshot at {queried} queries: PR-AUC = {auc_val:.4f}")
+                    ap_val = compute_average_precision(clf, X_eval, y_eval)
+                    print(f"  >> AUC snapshot at {queried} queries: "
+                          f"PR-AUC(trapz) = {auc_val:.4f}; AP = {ap_val:.4f}")
                     if trial == 0:
                         import copy
                         clf_snapshots.append((queried, copy.deepcopy(clf)))
                 else:
                     auc_val = float('nan')
+                    ap_val = float('nan')
                     print(f"  >> AUC snapshot at {queried} queries: skipped (clf not ready)")
                 trial_aucs.append(auc_val)
+                trial_average_precisions.append(ap_val)
 
                 # Track cumulative MP count among queried samples
                 n_queried_mp = int(np.sum(y_labeled[warm_n:n_labeled] == 0))
                 trial_mp_counts.append(n_queried_mp)
 
         all_trial_aucs.append(trial_aucs)
+        all_trial_average_precisions.append(trial_average_precisions)
         all_trial_mp_counts.append(trial_mp_counts)
         all_trial_test_losses.append(trial_test_losses)
         all_trial_weight_stats.append(trial_weight_stats)
@@ -3249,6 +3474,8 @@ def run_active_learning(args):
         auc_data = {
             "auc_query_points": auc_query_points,
             "trial_aucs": all_trial_aucs,
+            "average_precision_query_points": auc_query_points,
+            "trial_average_precisions": all_trial_average_precisions,
             "trial_mp_counts": all_trial_mp_counts,
             "eval_query_points": eval_query_points,
             "trial_test_losses": all_trial_test_losses,
@@ -3270,6 +3497,9 @@ def run_active_learning(args):
             json.dump(weight_stats_data, f, indent=2)
 
         _save_auc_trials_plot(auc_query_points, all_trial_aucs, args.out_dir, args.n_trials)
+        _save_average_precision_trials_plot(
+            auc_query_points, all_trial_average_precisions, args.out_dir, args.n_trials
+        )
         _save_mp_trials_plot(auc_query_points, all_trial_mp_counts, args.out_dir, args.n_trials)
         _save_test_loss_trials_plot(eval_query_points, all_trial_test_losses, args.out_dir, args.n_trials)
         _save_weight_stats_trials_plot(all_trial_weight_stats, args.out_dir, args.n_trials)
@@ -3298,6 +3528,14 @@ def main():
     a("--model", default="logistic", choices=["logistic", "ridge", "xgboost"],
       help="Final classifier: logistic regression, ridge-regression classifier, or XGBoost boosted trees.")
     a("--lambda-MP", type=float, default=1.0, help="Desired total-weight ratio MP/MR. Per-sample weights are auto-scaled so n_MP*w_MP / n_MR*w_MR = lambda_MP.")
+    a("--train-weight-sum-mode", default="fixed",
+      choices=["fixed", "initial_labeled", "current_labeled"],
+      help="How to set the total sum of final training sample weights. "
+           "fixed uses --train-weight-sum; initial_labeled uses the post-heldout "
+           "warm-start labeled count for all snapshots; current_labeled uses the "
+           "current labeled count at each snapshot.")
+    a("--train-weight-sum", type=float, default=DEFAULT_TRAIN_WEIGHT_SUM,
+      help="Target total final training sample-weight sum when --train-weight-sum-mode=fixed.")
     a("--C",         type=float, default=1.0, help="Inverse regularisation strength.")
     a("--ridge-alpha", type=float, default=1.0,
       help="L2 regularisation strength for --model=ridge. Larger values mean stronger ridge regularization.")
@@ -3344,6 +3582,10 @@ def main():
 
     # Practical
     a("--eval-size",       type=int, default=100_000, help="Eval subsample size.")
+    a("--eval-source", default="pool", choices=["pool", "full_heldout"],
+      help="Evaluation construction. pool preserves the legacy behavior by sampling "
+           "from the query pool. full_heldout samples eval rows from the full dataset "
+           "first and removes them from warm-start training and query candidates.")
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
     a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein / Wasserstein-L2 / entropicOT strategy. Brute-force search is O(n × pool_size²).")
@@ -3369,6 +3611,8 @@ def main():
         args.voronoi_l2_initial_max_iter = args.voronoi_l2_max_iter
     if args.voronoi_l2_initial_max_iter <= 0:
         p.error("--voronoi-l2-initial-max-iter must be positive.")
+    if args.train_weight_sum <= 0:
+        p.error("--train-weight-sum must be positive.")
     if args.out_dir is None:
         args.out_dir = f"al_{args.strategy}"
     run_active_learning(args)

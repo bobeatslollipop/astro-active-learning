@@ -11,7 +11,9 @@ FULL_DATA=bp_rp_lamost_normalized.h5
 FEH_THRESHOLD=-2.0
 TOTAL_QUERIES=150
 EVAL_EVERY=10
-LAMBDA_MP=0.01
+LAMBDA_MP=1
+TRAIN_WEIGHT_SUM_MODE=initial_labeled
+EVAL_SOURCE=full_heldout
 WASS_POOL=45000
 C=10000.0
 EVAL_SIZE=500000
@@ -24,9 +26,7 @@ WASS_PLAN_SIZE="$EVAL_EVERY"
 VORONOI_L2_MAX_ITER=8
 VORONOI_L2_INITIAL_MAX_ITER=16
 
-# Re-run the full sweep under the current Voronoi-L2 optimizer settings.
-LAMBDAS=(100 300 1000 3000 10000)
-COMPARE_LAMBDAS=(100 300 1000 3000 10000)
+LAMBDAS=(100 1000 10000 100000)
 
 # XGBoost configuration from the full-training xgb_deeper benchmark.
 XGB_N_ESTIMATORS=700
@@ -41,7 +41,7 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgboost_wasserstein_l2_lambda_sweep_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+RESULT_ROOT="xgb_wasserstein_l2_lambdaMP1_fullheldout_initialweightsum_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
 
 for lambda in "${LAMBDAS[@]}"; do
   out_dir="${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"
@@ -67,6 +67,8 @@ for lambda in "${LAMBDAS[@]}"; do
     --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \
     --lambda-MP       "$LAMBDA_MP" \
+    --train-weight-sum-mode "$TRAIN_WEIGHT_SUM_MODE" \
+    --eval-source     "$EVAL_SOURCE" \
     --wass-pool-size  "$WASS_POOL" \
     --wass-plan-size  "$WASS_PLAN_SIZE" \
     --C               "$C" \
@@ -91,28 +93,37 @@ done
 
 echo ""
 echo "============================================================"
-echo "  Generating Wasserstein-L2 lambda-sweep PR-AUC comparison"
+echo "  Generating Wasserstein-L2 lambda-sweep AP comparison"
 echo "============================================================"
 
 python compare_auc_trials.py \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[0]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[1]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[2]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[3]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[4]}" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_auc.png" \
-  --labels "lambda=100" "lambda=300" "lambda=1e3" "lambda=3e3" "lambda=1e4" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
+  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_average_precision.png" \
+  --metric average_precision \
+  --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" \
+  --cmap-runs viridis
+
+python compare_auc_trials.py \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
+  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_pr_auc_trapz.png" \
+  --metric pr_auc \
+  --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" \
   --cmap-runs viridis
 
 python compare_weight_l2_trials.py \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[0]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[1]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[2]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[3]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${COMPARE_LAMBDAS[4]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_effective_sample_size.png" \
   --metric effective_sample_size \
-  --labels "lambda=100" "lambda=300" "lambda=1e3" "lambda=3e3" "lambda=1e4"
+  --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5"
 
 echo ""
 echo "All XGBoost Wasserstein-L2 lambda sweep experiments completed."
