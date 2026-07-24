@@ -2317,8 +2317,8 @@ DEFAULT_TRAIN_WEIGHT_SUM = 10_000.0
 
 
 def _class_ratio_sample_weights(y, lambda_MP=1.0, sample_weight=None,
-                                target_sum=None):
-    """Apply MP/MR total-weight locking while preserving within-class weights."""
+                                target_sum=None, class_balance_mode="ratio"):
+    """Build final training weights, optionally locking MP/MR total ratio."""
     if target_sum is None:
         raise ValueError("target_sum must be resolved explicitly before training.")
     target_sum = float(target_sum)
@@ -2331,6 +2331,17 @@ def _class_ratio_sample_weights(y, lambda_MP=1.0, sample_weight=None,
         sw = np.array(sample_weight, dtype=np.float64)
     else:
         sw = np.ones(len(y), dtype=np.float64)
+
+    if class_balance_mode == "none":
+        final_w = np.array(sw, dtype=np.float64, copy=True)
+        final_w[~np.isfinite(final_w)] = 0.0
+        final_w = np.maximum(final_w, 0.0)
+        total_w = final_w.sum()
+        if total_w > 0:
+            final_w *= (target_sum / total_w)
+        return final_w
+    if class_balance_mode != "ratio":
+        raise ValueError(f"Unknown class_balance_mode: {class_balance_mode!r}.")
 
     final_w = np.zeros_like(sw)
     mp_mask = (y == 0)
@@ -2361,7 +2372,8 @@ def _resolve_train_weight_target_sum(mode, fixed_sum, initial_labeled_count, cur
     raise ValueError(f"Unknown train weight sum mode: {mode!r}")
 
 
-def _final_weight_summary(y, final_w, target_sum, lambda_MP, *, rtol=1e-6):
+def _final_weight_summary(y, final_w, target_sum, lambda_MP, *,
+                          class_balance_mode="ratio", rtol=1e-6):
     """Validate and summarize final class-balanced training weights."""
     y = np.asarray(y)
     final_w = np.asarray(final_w, dtype=np.float64)
@@ -2375,7 +2387,7 @@ def _final_weight_summary(y, final_w, target_sum, lambda_MP, *, rtol=1e-6):
             f"Final training weight total {total:.12g} does not match target "
             f"{target_sum:.12g}."
         )
-    if np.isclose(float(lambda_MP), 1.0, rtol=rtol, atol=1e-12):
+    if class_balance_mode == "ratio" and np.isclose(float(lambda_MP), 1.0, rtol=rtol, atol=1e-12):
         half = target_sum / 2.0
         if not np.isclose(mp_sum, half, rtol=rtol, atol=atol):
             raise RuntimeError(
@@ -2396,7 +2408,7 @@ def _final_weight_summary(y, final_w, target_sum, lambda_MP, *, rtol=1e-6):
 
 
 def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None,
-                   target_sum=None):
+                   target_sum=None, class_balance_mode="ratio"):
     """Train logistic regression with guaranteed class weight totals.
 
     Regardless of the per-sample weights provided (e.g. Voronoi weights),
@@ -2423,8 +2435,11 @@ def train_logistic(X, y, lambda_MP=1.0, C=1.0, prev_clf=None, sample_weight=None
     # to a fixed total keeps the data-fit term comparable throughout — C then has a fixed,
     # dataset-size-independent meaning.  The class ratio and within-class
     # Voronoi corrections are unaffected (we only multiply by a scalar).
-    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight,
-                                          target_sum=target_sum)
+    final_w = _class_ratio_sample_weights(
+        y, lambda_MP, sample_weight,
+        target_sum=target_sum,
+        class_balance_mode=class_balance_mode,
+    )
 
     clf = LogisticRegression(C=C, solver="lbfgs", max_iter=2000,
                              warm_start=True)
@@ -2459,10 +2474,13 @@ class RidgeRegressionClassifier:
 
 
 def train_ridge_classifier(X, y, lambda_MP=1.0, alpha=1.0, sample_weight=None,
-                           target_sum=None):
+                           target_sum=None, class_balance_mode="ratio"):
     """Train weighted ridge regression on targets MP=-1, MR=+1."""
-    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight,
-                                          target_sum=target_sum)
+    final_w = _class_ratio_sample_weights(
+        y, lambda_MP, sample_weight,
+        target_sum=target_sum,
+        class_balance_mode=class_balance_mode,
+    )
     X = np.asarray(X, dtype=np.float64)
     target = np.where(y == 0, -1.0, 1.0).astype(np.float64)
 
@@ -2516,7 +2534,7 @@ def train_xgboost_classifier(X, y, lambda_MP=1.0, sample_weight=None, *,
                              min_child_weight=1.0, gamma=0.0,
                              reg_lambda=1.0, tree_method="hist",
                              device="auto", n_jobs=-1, random_state=42,
-                             target_sum=None):
+                             target_sum=None, class_balance_mode="ratio"):
     """Train an XGBoost boosted-tree classifier, following Yao et al.'s model family.
 
     The paper uses XGBoost multiclass classifiers over metallicity bins.  The
@@ -2533,8 +2551,11 @@ def train_xgboost_classifier(X, y, lambda_MP=1.0, sample_weight=None, *,
             "then rerun with --model xgboost."
         ) from exc
 
-    final_w = _class_ratio_sample_weights(y, lambda_MP, sample_weight,
-                                          target_sum=target_sum)
+    final_w = _class_ratio_sample_weights(
+        y, lambda_MP, sample_weight,
+        target_sum=target_sum,
+        class_balance_mode=class_balance_mode,
+    )
     params = dict(
         objective="binary:logistic",
         eval_metric="logloss",
@@ -3304,13 +3325,17 @@ def run_active_learning(args):
                 len(yl),
             )
             final_train_w = _class_ratio_sample_weights(
-                yl, args.lambda_MP, sw, target_sum=target_weight_sum
+                yl, args.lambda_MP, sw,
+                target_sum=target_weight_sum,
+                class_balance_mode=args.class_balance_mode,
             )
             weight_summary = _final_weight_summary(
-                yl, final_train_w, target_weight_sum, args.lambda_MP
+                yl, final_train_w, target_weight_sum, args.lambda_MP,
+                class_balance_mode=args.class_balance_mode,
             )
             print(
                 "  [TrainWeights] "
+                f"class_balance={args.class_balance_mode} "
                 f"mode={args.train_weight_sum_mode} "
                 f"target={weight_summary['train_weight_target_sum']:.6g} "
                 f"total={weight_summary['train_weight_actual_sum']:.6g} "
@@ -3322,12 +3347,14 @@ def run_active_learning(args):
             if args.model == "logistic":
                 clf = train_logistic(Xl, yl, args.lambda_MP, args.C,
                                      prev_clf=prev_clf, sample_weight=sw,
-                                     target_sum=target_weight_sum)
+                                     target_sum=target_weight_sum,
+                                     class_balance_mode=args.class_balance_mode)
             elif args.model == "ridge":
                 clf = train_ridge_classifier(Xl, yl, args.lambda_MP,
                                              alpha=args.ridge_alpha,
                                              sample_weight=sw,
-                                             target_sum=target_weight_sum)
+                                             target_sum=target_weight_sum,
+                                             class_balance_mode=args.class_balance_mode)
             elif args.model == "xgboost":
                 clf = train_xgboost_classifier(
                     Xl, yl, args.lambda_MP, sample_weight=sw,
@@ -3344,6 +3371,7 @@ def run_active_learning(args):
                     n_jobs=args.xgb_n_jobs,
                     random_state=args.seed + trial,
                     target_sum=target_weight_sum,
+                    class_balance_mode=args.class_balance_mode,
                 )
             else:
                 raise ValueError(f"Unknown model: {args.model}")
@@ -3357,6 +3385,7 @@ def run_active_learning(args):
             m["avg_test_loss"] = (m["loss_MP"] + m["loss_MR"]) / 2.0
             m.update(weight_summary)
             m["train_weight_sum_mode"] = args.train_weight_sum_mode
+            m["class_balance_mode"] = args.class_balance_mode
 
             # Track test losses for cross-trial plotting
             trial_test_losses.append({
@@ -3597,6 +3626,11 @@ def main():
     a("--model", default="logistic", choices=["logistic", "ridge", "xgboost"],
       help="Final classifier: logistic regression, ridge-regression classifier, or XGBoost boosted trees.")
     a("--lambda-MP", type=float, default=1.0, help="Desired total-weight ratio MP/MR. Per-sample weights are auto-scaled so n_MP*w_MP / n_MR*w_MR = lambda_MP.")
+    a("--class-balance-mode", default="ratio", choices=["ratio", "none"],
+      help="How final training weights treat MP/MR totals. ratio preserves the "
+           "historical behavior by forcing total MP/MR weight ratio --lambda-MP. "
+           "none preserves raw sample_weight ratios and only normalizes the total "
+           "weight sum.")
     a("--train-weight-sum-mode", default="fixed",
       choices=["fixed", "initial_labeled", "current_labeled"],
       help="How to set the total sum of final training sample weights. "
