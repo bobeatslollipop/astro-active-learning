@@ -60,6 +60,15 @@ def _timing(label, start_time):
     print(f"  [Timing] {label}: {time.perf_counter() - start_time:.2f}s")
 
 
+def _json_scalar(value):
+    """Convert numpy/HDF5 scalars to plain JSON-safe Python values."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def _nsort(s):
     """Natural sort key for strings like 'bp_2', 'bp_10'."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"([0-9]+)", s)]
@@ -3033,6 +3042,7 @@ def run_active_learning(args):
     eval_warm_overlap = None
     eval_pool_overlap = None
     eval_source_id_mode = sid_warm is not None and sid_full is not None
+    sid_pool = None
 
     if args.eval_source == "full_heldout":
         eval_n = min(args.eval_size, len(X_full))
@@ -3089,6 +3099,8 @@ def run_active_learning(args):
             )
 
         X_pool, y_pool = X_full[pool_mask].copy(), y_full[pool_mask].copy()
+        if eval_source_id_mode:
+            sid_pool = sid_full[pool_mask].copy()
     else:
         if eval_source_id_mode:
             pool_mask = ~np.isin(sid_full, sid_warm)
@@ -3098,6 +3110,8 @@ def run_active_learning(args):
             pool_mask = np.array([tuple(np.round(x, 6)) not in warm_set for x in X_full])
 
         X_pool, y_pool = X_full[pool_mask].copy(), y_full[pool_mask].copy()
+        if eval_source_id_mode:
+            sid_pool = sid_full[pool_mask].copy()
         eval_n = min(args.eval_size, len(X_pool))
         eval_idx = eval_rng.choice(len(X_pool), eval_n, replace=False)
         X_eval, y_eval = X_pool[eval_idx], y_pool[eval_idx]
@@ -3127,6 +3141,7 @@ def run_active_learning(args):
     args.eval_original_warm_fraction = float(eval_original_warm_count / max(1, eval_n))
     args.eval_final_warm_overlap = None if eval_warm_overlap is None else int(eval_warm_overlap)
     args.eval_query_pool_overlap = None if eval_pool_overlap is None else int(eval_pool_overlap)
+    args.query_rng_mode = "dedicated_for_kmedianpp" if args.strategy == "kmedianpp" else "shared"
 
     initial_target_sum = _resolve_train_weight_target_sum(
         args.train_weight_sum_mode,
@@ -3155,6 +3170,7 @@ def run_active_learning(args):
     all_trial_mp_counts = []     # list of lists, cumulative MP counts at each snapshot
     all_trial_test_losses = []   # list of lists of dicts, test losses at each eval point
     all_trial_weight_stats = []  # list of lists of reweighting concentration stats
+    all_trial_query_plans = []   # exact queried pool indices/source_ids per trial
     first_trial_results = None
 
     for trial in range(args.n_trials):
@@ -3164,6 +3180,14 @@ def run_active_learning(args):
             print(f"{'=' * 60}")
 
         rng = np.random.RandomState(args.seed + trial)
+        query_rng = (
+            np.random.RandomState(args.seed + trial)
+            if args.strategy == "kmedianpp"
+            else rng
+        )
+        if args.strategy == "kmedianpp":
+            print("  [Query RNG] kmedianpp uses a dedicated RNG stream; "
+                  "reweighting/training RNG draws cannot change the query plan.")
 
         # Reset labeled set for this trial
         if args.strategy == "purely_random":
@@ -3197,6 +3221,10 @@ def run_active_learning(args):
         trial_mp_counts = []
         trial_test_losses = []   # test losses at each eval point for this trial
         trial_weight_stats = []
+        trial_query_pool_indices = []
+        trial_query_source_ids = []
+        trial_query_labels = []
+        trial_query_batches = []
         clf_snapshots = []       # (queries, clf) pairs for PR curve — first trial only
 
         # Helper: train → evaluate → record → log
@@ -3354,10 +3382,11 @@ def run_active_learning(args):
 
         while queried < args.total_queries and available.any():
             batch = min(args.eval_every, args.total_queries - queried, int(available.sum()))
+            query_start = queried
             query_t0 = time.perf_counter()
 
             if args.strategy in ("wasserstein", "wasserstein_l2"):
-                pool_idx = strategy_fn(X_pool, clf, batch, rng,
+                pool_idx = strategy_fn(X_pool, clf, batch, query_rng,
                                        X_labeled=X_labeled[:n_labeled],
                                        state=strategy_state,
                                        pool_size=args.wass_pool_size,
@@ -3367,7 +3396,7 @@ def run_active_learning(args):
                                        temperature=args.eot_temperature)
             else:
                 avail_idx = np.where(available)[0]
-                sel = strategy_fn(X_pool[avail_idx], clf, batch, rng,
+                sel = strategy_fn(X_pool[avail_idx], clf, batch, query_rng,
                                   X_labeled=X_labeled[:n_labeled], state=strategy_state,
                                   pool_size=args.wass_pool_size,
                                   temperature=args.eot_temperature,
@@ -3383,6 +3412,25 @@ def run_active_learning(args):
 
             # Append to pre-allocated arrays (no vstack/concatenate)
             n_new = len(pool_idx)
+            pool_idx_list = [int(i) for i in pool_idx]
+            label_list = [int(v) for v in y_pool[pool_idx]]
+            if sid_pool is not None:
+                source_id_list = [_json_scalar(v) for v in sid_pool[pool_idx]]
+            else:
+                source_id_list = None
+
+            trial_query_pool_indices.extend(pool_idx_list)
+            trial_query_labels.extend(label_list)
+            if source_id_list is not None:
+                trial_query_source_ids.extend(source_id_list)
+            trial_query_batches.append({
+                "n_queries_before": int(query_start),
+                "n_queries_after": int(query_start + n_new),
+                "pool_indices": pool_idx_list,
+                "source_ids": source_id_list,
+                "labels": label_list,
+            })
+
             X_labeled[n_labeled:n_labeled + n_new] = X_pool[pool_idx]
             y_labeled[n_labeled:n_labeled + n_new] = y_pool[pool_idx]
             n_labeled += n_new
@@ -3417,6 +3465,15 @@ def run_active_learning(args):
         all_trial_mp_counts.append(trial_mp_counts)
         all_trial_test_losses.append(trial_test_losses)
         all_trial_weight_stats.append(trial_weight_stats)
+        all_trial_query_plans.append({
+            "trial": int(trial),
+            "seed": int(args.seed + trial),
+            "query_rng_mode": args.query_rng_mode,
+            "pool_indices": trial_query_pool_indices,
+            "source_ids": trial_query_source_ids if sid_pool is not None else None,
+            "labels": trial_query_labels,
+            "batches": trial_query_batches,
+        })
 
         # 7. Save detailed outputs (first trial only)
         if trial == 0:
@@ -3466,6 +3523,18 @@ def run_active_learning(args):
     # 8. Summary & multi-trial AUC plot
     t_total = time.perf_counter() - t0
     print(f"\nTotal runtime ({args.n_trials} trial(s)): {t_total:.1f}s")
+
+    query_plan_data = {
+        "strategy": args.strategy,
+        "query_rng_mode": args.query_rng_mode,
+        "seed": int(args.seed),
+        "n_trials": int(args.n_trials),
+        "total_queries": int(args.total_queries),
+        "eval_every": int(args.eval_every),
+        "trial_query_plans": all_trial_query_plans,
+    }
+    with open(os.path.join(args.out_dir, "query_plan_trials.json"), "w") as f:
+        json.dump(query_plan_data, f, indent=2)
 
     if args.n_trials > 1:
         # Derive eval query points from the first trial's test loss records
