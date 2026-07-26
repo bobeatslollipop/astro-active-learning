@@ -3024,8 +3024,9 @@ def run_active_learning(args):
         )
 
     snap_interval = args.total_queries // args.n_snapshots
-    auc_query_points = [snap_interval * (i + 1) for i in range(args.n_snapshots)]
-    auc_query_set = set(auc_query_points)
+    positive_auc_query_points = [snap_interval * (i + 1) for i in range(args.n_snapshots)]
+    auc_query_points = ([0] if args.include_zero_snapshot else []) + positive_auc_query_points
+    auc_query_set = set(positive_auc_query_points)
 
     strategy_fn = STRATEGIES[args.strategy]
     if args.strategy == "wasserstein_l2":
@@ -3181,11 +3182,68 @@ def run_active_learning(args):
           f"initial labeled count={args.initial_labeled_count}; "
           f"initial target sum={initial_target_sum:.6g}")
 
+    if args.reweight_source == "full_non_eval" and args.eval_source != "full_heldout":
+        raise ValueError("--reweight-source full_non_eval requires --eval-source full_heldout.")
+
+    if args.reweight_source == "full_non_eval":
+        reweight_source_n = len(X_warm) + len(X_pool)
+        reweight_source_warm_n = len(X_warm)
+        print("  Reweight target source: full_non_eval "
+              f"(final warm-start + query pool); total={reweight_source_n}, "
+              f"final warm-start contribution={reweight_source_warm_n} "
+              f"({reweight_source_warm_n / max(1, reweight_source_n):.4%})")
+    else:
+        reweight_source_n = len(X_pool)
+        reweight_source_warm_n = 0
+        print(f"  Reweight target source: query_pool; total={reweight_source_n}")
+    args.reweight_source_total_count = int(reweight_source_n)
+    args.reweight_source_final_warm_count = int(reweight_source_warm_n)
+    args.reweight_source_final_warm_fraction = float(reweight_source_warm_n / max(1, reweight_source_n))
+
     # 4. Pre-allocate labeled arrays (reused across trials)
     max_labeled = len(X_warm) + args.total_queries
     n_features = X_warm.shape[1]
     X_labeled = np.empty((max_labeled, n_features), dtype=np.float32)
     y_labeled = np.empty(max_labeled, dtype=np.int32)
+
+    subsampled_reweighting = args.reweighting in ("soft", "voronoi_l2", "kl", "moment_l2")
+    uses_reweight_subsample = (
+        subsampled_reweighting
+        and args.reweight_pool_size
+        and args.reweight_pool_size < reweight_source_n
+    )
+    X_reweight_full_non_eval = None
+    if args.reweighting != "none" and args.reweight_source == "full_non_eval" and not uses_reweight_subsample:
+        X_reweight_full_non_eval = np.vstack([X_warm, X_pool]).astype(np.float32, copy=False)
+
+    def make_reweight_pool(trial_rng):
+        """Build the fixed target pool used for reweighting in one trial."""
+        if args.reweight_source == "full_non_eval":
+            total_n = reweight_source_n
+            warm_n = len(X_warm)
+            if uses_reweight_subsample:
+                idx = trial_rng.choice(total_n, args.reweight_pool_size, replace=False)
+                warm_mask = idx < warm_n
+                warm_idx = idx[warm_mask]
+                pool_idx = idx[~warm_mask] - warm_n
+                parts = []
+                if len(warm_idx):
+                    parts.append(X_warm[warm_idx])
+                if len(pool_idx):
+                    parts.append(X_pool[pool_idx])
+                if len(parts) == 1:
+                    X_rw = parts[0].copy()
+                else:
+                    X_rw = np.vstack(parts).astype(np.float32, copy=False)
+                return X_rw, total_n, int(len(warm_idx))
+            if X_reweight_full_non_eval is not None:
+                return X_reweight_full_non_eval, total_n, warm_n
+            return np.vstack([X_warm, X_pool]).astype(np.float32, copy=False), total_n, warm_n
+
+        if uses_reweight_subsample:
+            idx = trial_rng.choice(len(X_pool), args.reweight_pool_size, replace=False)
+            return X_pool[idx], len(X_pool), 0
+        return X_pool, len(X_pool), 0
 
     # ── Multi-trial loop ──
     all_trial_aucs = []          # legacy trapezoidal PR-AUC values
@@ -3231,13 +3289,22 @@ def run_active_learning(args):
         moment_weight_state = {}
         final_sw = None
 
-        # Pre-compute fixed reweight-pool subsample for this trial (reused across snapshots
-        # so the incremental top-K cache stays valid)
-        if args.reweighting in ("soft", "voronoi_l2", "kl", "moment_l2") and args.reweight_pool_size and args.reweight_pool_size < len(X_pool):
-            reweight_pool_idx = rng.choice(len(X_pool), args.reweight_pool_size, replace=False)
-            X_reweight_pool = X_pool[reweight_pool_idx]
-        else:
-            X_reweight_pool = X_pool
+        # Pre-compute fixed reweight target for this trial (reused across snapshots
+        # so the incremental top-K/cache state stays valid)
+        X_reweight_pool, reweight_source_full_n, reweight_pool_warm_n = make_reweight_pool(rng)
+        if args.reweighting != "none":
+            reweight_note = (
+                f" (subsampled from {reweight_source_full_n})"
+                if len(X_reweight_pool) < reweight_source_full_n
+                else ""
+            )
+            if args.reweight_source == "full_non_eval":
+                print(f"  [ReweightTarget] source=full_non_eval; "
+                      f"target_rows={len(X_reweight_pool)}{reweight_note}; "
+                      f"warm_rows_in_target={reweight_pool_warm_n}")
+            else:
+                print(f"  [ReweightTarget] source=query_pool; "
+                      f"target_rows={len(X_reweight_pool)}{reweight_note}")
 
         trial_aucs = []
         trial_average_precisions = []
@@ -3266,14 +3333,14 @@ def run_active_learning(args):
             if args.reweighting == "hard":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Voronoi-hard weights"
-                print(f"  [Voronoi-Hard] Computing sample weights ({n_labeled} labeled vs {len(X_pool)} pool)...")
-                sw, voronoi_state = compute_voronoi_weights(X_pool, Xl, voronoi_state)
+                print(f"  [Voronoi-Hard] Computing sample weights ({n_labeled} labeled vs {len(X_reweight_pool)} target rows)...")
+                sw, voronoi_state = compute_voronoi_weights(X_reweight_pool, Xl, voronoi_state)
             elif args.reweighting == "soft":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Voronoi-soft weights"
                 print(f"  [Voronoi-Soft] Computing sample weights (τ={args.temperature}, "
-                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} target rows"
+                      f"{f' (subsampled from {reweight_source_full_n})' if len(X_reweight_pool) < reweight_source_full_n else ''})...")
                 sw = compute_soft_voronoi_weights(X_reweight_pool, Xl, args.temperature,
                                                    soft_state=soft_voronoi_state,
                                                    topk=args.soft_topk)
@@ -3285,8 +3352,8 @@ def run_active_learning(args):
                     l2_max_iter = args.voronoi_l2_initial_max_iter
                 print(f"  [Voronoi-L2] Computing sample weights (λ={args.reweight_lambda}, "
                       f"max_iter={l2_max_iter}, "
-                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} target rows"
+                      f"{f' (subsampled from {reweight_source_full_n})' if len(X_reweight_pool) < reweight_source_full_n else ''})...")
                 sw = compute_voronoi_l2_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                                 state=voronoi_l2_state,
                                                 max_iter=l2_max_iter)
@@ -3294,8 +3361,8 @@ def run_active_learning(args):
                 reweight_t0 = time.perf_counter()
                 reweight_label = "KL weights"
                 print(f"  [KL] Computing sample weights (λ={args.reweight_lambda}, "
-                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} target rows"
+                      f"{f' (subsampled from {reweight_source_full_n})' if len(X_reweight_pool) < reweight_source_full_n else ''})...")
                 sw = compute_kl_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                         state=kl_state,
                                         max_iter=args.voronoi_l2_max_iter)
@@ -3303,8 +3370,8 @@ def run_active_learning(args):
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Moment-L2 weights"
                 print(f"  [Moment-L2] Computing sample weights (λ={args.reweight_lambda}, "
-                      f"{n_labeled} labeled vs {len(X_reweight_pool)} pool"
-                      f"{f' (subsampled from {len(X_pool)})' if len(X_reweight_pool) < len(X_pool) else ''})...")
+                      f"{n_labeled} labeled vs {len(X_reweight_pool)} target rows"
+                      f"{f' (subsampled from {reweight_source_full_n})' if len(X_reweight_pool) < reweight_source_full_n else ''})...")
                 sw = compute_moment_l2_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                                state=moment_weight_state,
                                                max_iter=args.moment_weight_iters)
@@ -3405,6 +3472,22 @@ def run_active_learning(args):
         # For purely_random the labeled set starts empty, so skip the initial fit.
         if args.strategy != "purely_random":
             clf = snapshot(0)
+            if args.include_zero_snapshot:
+                if clf is not None:
+                    auc_val = compute_pr_auc(clf, X_eval, y_eval)
+                    ap_val = compute_average_precision(clf, X_eval, y_eval)
+                    print(f"  >> AUC snapshot at 0 queries: "
+                          f"PR-AUC(trapz) = {auc_val:.4f}; AP = {ap_val:.4f}")
+                    if trial == 0:
+                        import copy
+                        clf_snapshots.append((0, copy.deepcopy(clf)))
+                else:
+                    auc_val = float('nan')
+                    ap_val = float('nan')
+                    print("  >> AUC snapshot at 0 queries: skipped (clf not ready)")
+                trial_aucs.append(auc_val)
+                trial_average_precisions.append(ap_val)
+                trial_mp_counts.append(0)
         else:
             clf = None
 
@@ -3681,9 +3764,16 @@ def main():
     a("--reweight-pool-size", dest="reweight_pool_size", type=int, default=None,
        help="Subsample pool to this size for soft/voronoi_l2/kl/moment_l2 reweighting. By default (None) uses the full pool. "
             "Setting e.g. 500000 computes weights on a 500k subsample instead of the full pool. "
-            "Hard reweighting is unaffected.")
+            "Hard reweighting uses the full selected --reweight-source target and is not subsampled by this option.")
     a("--softmax-pool-size", dest="reweight_pool_size", type=int, default=None,
        help=argparse.SUPPRESS)
+    a("--reweight-source", default="query_pool", choices=["query_pool", "full_non_eval"],
+      help="Target distribution used for reweighting. query_pool preserves the historical "
+           "behavior. full_non_eval, valid with --eval-source full_heldout, uses final "
+           "warm-start training rows plus the query pool so the warm-start region also "
+           "contributes target mass.")
+    a("--include-zero-snapshot", action="store_true",
+      help="Include the warm-start-only 0-query classifier in AUC/AP trial curves.")
 
     # Practical
     a("--eval-size",       type=int, default=100_000, help="Eval subsample size.")
