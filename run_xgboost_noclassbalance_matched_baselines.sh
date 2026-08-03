@@ -29,8 +29,7 @@ N_TRIALS=5
 N_SNAPSHOTS=10
 SOFT_TOPK=20
 REWEIGHT_POOL=100000
-VORONOI_L2_MAX_ITER=8
-VORONOI_L2_INITIAL_MAX_ITER=16
+VORONOI_L2_MAX_ITER=128
 
 XGB_N_ESTIMATORS=700
 XGB_MAX_DEPTH=6
@@ -123,7 +122,6 @@ run_if_missing "$KMED_L2_OUT" \
     --reweight-pool-size "$REWEIGHT_POOL" \
     --reweight-lambda 100 \
     --voronoi-l2-max-iter "$VORONOI_L2_MAX_ITER" \
-    --voronoi-l2-initial-max-iter "$VORONOI_L2_INITIAL_MAX_ITER" \
     --out-dir "$KMED_L2_OUT"
 
 echo ""

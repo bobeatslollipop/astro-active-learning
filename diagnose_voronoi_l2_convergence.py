@@ -4,7 +4,7 @@
 This script reuses the matched no-class-balancing active-learning split and a
 saved kmedian++ query plan.  It does not train XGBoost; it only solves the
 Voronoi-L2 reweighting subproblem at a few query counts and compares the
-production iteration schedule against additional L-BFGS iterations.
+unified production solve against additional, stricter L-BFGS iterations.
 """
 
 from __future__ import annotations
@@ -266,8 +266,10 @@ def main():
     parser.add_argument("--snapshot-every", type=int, default=15)
     parser.add_argument("--reweight-pool-size", type=int, default=100000)
     parser.add_argument("--reweight-lambda", type=float, default=100.0)
-    parser.add_argument("--production-initial-iter", type=int, default=16)
-    parser.add_argument("--production-later-iter", type=int, default=8)
+    parser.add_argument("--production-max-iter", type=int, default=128)
+    parser.add_argument("--objective-tol", type=float, default=1e-4)
+    parser.add_argument("--objective-patience", type=int, default=2)
+    parser.add_argument("--gradient-tol", type=float, default=1e-5)
     parser.add_argument("--reference-extra-iter", type=int, default=32)
     parser.add_argument(
         "--query-plan-json",
@@ -323,12 +325,26 @@ def main():
         if n_queries > 0:
             X_labeled[len(X_warm) : len(X_warm) + n_queries] = X_pool[query_indices[:n_queries]]
         Xl = X_labeled[: len(X_warm) + n_queries]
-        prod_iter = args.production_initial_iter if "z" not in prod_state else args.production_later_iter
+        prod_iter = args.production_max_iter
 
         print(f"\n[Snapshot q={n_queries}] production max_iter={prod_iter}; n_labeled={len(Xl)}")
         t_prod = time.perf_counter()
         w_prod = compute_voronoi_l2_weights(
-            X_reweight, Xl, args.reweight_lambda, state=prod_state, max_iter=prod_iter
+            X_reweight,
+            Xl,
+            args.reweight_lambda,
+            state=prod_state,
+            max_iter=prod_iter,
+            objective_tol=args.objective_tol,
+            objective_patience=args.objective_patience,
+            gradient_tol=args.gradient_tol,
+            trace_context={
+                "trial": int(args.trial + 1),
+                "seed": int(args.seed + args.trial),
+                "n_queries": int(n_queries),
+                "solve": int(snap_i + 1),
+                "diagnostic_role": "production",
+            },
         )
         prod_time = time.perf_counter() - t_prod
         z_prod = prod_state["z"].copy()
@@ -350,6 +366,16 @@ def main():
             args.reweight_lambda,
             state=ref_state,
             max_iter=args.reference_extra_iter,
+            objective_tol=1e-12,
+            objective_patience=2,
+            gradient_tol=0.0,
+            trace_context={
+                "trial": int(args.trial + 1),
+                "seed": int(args.seed + args.trial),
+                "n_queries": int(n_queries),
+                "solve": int(snap_i + 1),
+                "diagnostic_role": "strict_reference",
+            },
         )
         ref_time = time.perf_counter() - t_ref
         z_ref = ref_state["z"].copy()
@@ -367,6 +393,16 @@ def main():
             "n_labeled": int(len(Xl)),
             "production_max_iter": int(prod_iter),
             "reference_extra_iter": int(args.reference_extra_iter),
+            "production_iterations_completed": int(
+                prod_state["last_optimizer_trace"]["iterations_completed"]
+            ),
+            "production_stop_reason": prod_state["last_optimizer_trace"]["stop_reason"],
+            "production_primal_dual_gap": prod_state["last_optimizer_trace"]["final_primal_dual_gap"],
+            "reference_iterations_completed": int(
+                ref_state["last_optimizer_trace"]["iterations_completed"]
+            ),
+            "reference_stop_reason": ref_state["last_optimizer_trace"]["stop_reason"],
+            "reference_primal_dual_gap": ref_state["last_optimizer_trace"]["final_primal_dual_gap"],
             "production_time_s": float(prod_time),
             "reference_time_s": float(ref_time),
             "prod_dual_objective": prod_diag["dual_objective"],
@@ -409,9 +445,14 @@ def main():
         "snapshot_every": args.snapshot_every,
         "reweight_lambda": args.reweight_lambda,
         "reweight_pool_size": args.reweight_pool_size,
-        "production_initial_iter": args.production_initial_iter,
-        "production_later_iter": args.production_later_iter,
+        "production_max_iter": args.production_max_iter,
+        "objective_tolerance": args.objective_tol,
+        "objective_patience": args.objective_patience,
+        "gradient_tolerance": args.gradient_tol,
         "reference_extra_iter": args.reference_extra_iter,
+        "reference_objective_tolerance": 1e-12,
+        "reference_objective_patience": 2,
+        "reference_gradient_tolerance": 0.0,
         "query_plan_source": query_plan_source,
         "total_runtime_s": total_time,
         "data_counts": counts,

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -19,8 +20,13 @@ from al_metadata import (
     ACTIVE_DERIVED_KEYS,
     ACTIVE_INPUT_SECTIONS,
     build_active_params,
+    git_metadata,
     update_params_status,
     write_params,
+)
+from al_queries import (
+    WASSERSTEIN_L2_IMPLEMENTATION_VERSION,
+    WASSERSTEIN_L2_QUERY_OBJECTIVE,
 )
 from run_xgboost_full_eval import model_metrics
 
@@ -61,8 +67,9 @@ def active_args(warm_path, full_path, out_dir):
         "moment_ridge": 1.0,
         "reweighting": "voronoi_l2",
         "reweight_lambda": 100.0,
-        "voronoi_l2_max_iter": 8,
-        "voronoi_l2_initial_max_iter": 16,
+        "voronoi_l2_max_iter": 128,
+        "voronoi_l2_objective_tol": 1e-4,
+        "voronoi_l2_objective_patience": 2,
         "temperature": 1.0,
         "soft_topk": 0,
         "reweight_pool_size": 10,
@@ -130,6 +137,39 @@ class LabelConventionTests(unittest.TestCase):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_git_metadata_ignores_only_untracked_result_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def git(*args):
+                subprocess.run(
+                    ["git", *args], cwd=root, check=True,
+                    text=True, capture_output=True,
+                )
+
+            git("init", "-q")
+            git("config", "user.name", "Metadata Test")
+            git("config", "user.email", "metadata@example.invalid")
+            source = root / "tracked.py"
+            source.write_text("VALUE = 1\n")
+            git("add", "tracked.py")
+            git("commit", "-qm", "initial")
+
+            result_path = root / "results" / "active_learning" / "run" / "params.json"
+            result_path.parent.mkdir(parents=True)
+            result_path.write_text("{}\n")
+            clean = git_metadata(root)
+            self.assertFalse(clean["dirty"])
+            self.assertEqual(clean["ignored_untracked_result_artifacts"], 1)
+
+            untracked_source = root / "new_code.py"
+            untracked_source.write_text("VALUE = 2\n")
+            self.assertTrue(git_metadata(root)["dirty"])
+            untracked_source.unlink()
+
+            source.write_text("VALUE = 3\n")
+            self.assertTrue(git_metadata(root)["dirty"])
+
     def test_params_hashes_and_protocol_behavior(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -152,6 +192,38 @@ class MetadataTests(unittest.TestCase):
             )
             self.assertEqual(first["run"]["config_hash"], second["run"]["config_hash"])
             self.assertEqual(first["run"]["protocol_id"], second["run"]["protocol_id"])
+
+            wasserstein_args = SimpleNamespace(**vars(args))
+            wasserstein_args.strategy = "wasserstein_l2"
+            wasserstein_args.query_rng_mode = "shared"
+            wasserstein_args.query_objective = WASSERSTEIN_L2_QUERY_OBJECTIVE
+            wasserstein_args.query_implementation_version = (
+                WASSERSTEIN_L2_IMPLEMENTATION_VERSION
+            )
+            wasserstein = build_active_params(
+                wasserstein_args, y_warm=y_warm, y_pool=y_pool, y_eval=y_eval,
+                data_load_seconds=0.1,
+            )
+            self.assertEqual(
+                wasserstein["query"]["query_objective"],
+                WASSERSTEIN_L2_QUERY_OBJECTIVE,
+            )
+            self.assertEqual(
+                wasserstein["query"]["query_implementation_version"], 2
+            )
+            wasserstein_args.query_implementation_version = 3
+            changed_implementation = build_active_params(
+                wasserstein_args, y_warm=y_warm, y_pool=y_pool, y_eval=y_eval,
+                data_load_seconds=0.1,
+            )
+            self.assertNotEqual(
+                wasserstein["run"]["config_hash"],
+                changed_implementation["run"]["config_hash"],
+            )
+            self.assertEqual(
+                wasserstein["run"]["protocol_id"],
+                changed_implementation["run"]["protocol_id"],
+            )
 
             args.strategy = "random"
             args.query_rng_mode = "shared"

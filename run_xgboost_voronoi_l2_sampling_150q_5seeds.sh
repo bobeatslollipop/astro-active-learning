@@ -22,8 +22,7 @@ N_SNAPSHOTS=15
 SOFT_TOPK=20
 REWEIGHT_POOL=100000
 REWEIGHT_LAMBDA=1000.0
-VORONOI_L2_MAX_ITER=8
-VORONOI_L2_INITIAL_MAX_ITER=16
+VORONOI_L2_MAX_ITER=128
 
 # XGBoost configuration from the full-training xgb_deeper benchmark.
 XGB_N_ESTIMATORS=700
@@ -71,7 +70,6 @@ for exp in "${EXPERIMENTS[@]}"; do
     --reweight-pool-size "$REWEIGHT_POOL" \
     --reweight-lambda "$REWEIGHT_LAMBDA" \
     --voronoi-l2-max-iter "$VORONOI_L2_MAX_ITER" \
-    --voronoi-l2-initial-max-iter "$VORONOI_L2_INITIAL_MAX_ITER" \
     --total-queries   "$TOTAL_QUERIES" \
     --eval-every      "$EVAL_EVERY" \
     --lambda-MP       "$LAMBDA_MP" \

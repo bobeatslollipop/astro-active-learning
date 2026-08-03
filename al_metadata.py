@@ -42,12 +42,15 @@ ACTIVE_INPUT_SECTIONS = {
         "wass_plan_size",
         "eot_temperature",
         "moment_ridge",
+        "query_objective",
+        "query_implementation_version",
     ),
     "reweighting": (
         "reweighting",
         "reweight_lambda",
         "voronoi_l2_max_iter",
-        "voronoi_l2_initial_max_iter",
+        "voronoi_l2_objective_tol",
+        "voronoi_l2_objective_patience",
         "temperature",
         "soft_topk",
         "reweight_pool_size",
@@ -251,11 +254,32 @@ def git_metadata(cwd=None):
 
     commit = run("rev-parse", "HEAD")
     branch = run("branch", "--show-current")
-    status = run("status", "--porcelain", "--untracked-files=normal")
+    tracked_status = run("status", "--porcelain", "--untracked-files=no")
+    untracked_text = run("ls-files", "--others", "--exclude-standard")
+    if untracked_text is None:
+        untracked_paths = None
+        source_untracked = None
+        result_artifacts = None
+    else:
+        untracked_paths = [path for path in untracked_text.splitlines() if path]
+        result_artifacts = [
+            path for path in untracked_paths
+            if path == "results" or path.startswith("results/")
+        ]
+        source_untracked = [
+            path for path in untracked_paths if path not in result_artifacts
+        ]
+
+    dirty = None
+    if tracked_status is not None and source_untracked is not None:
+        dirty = bool(tracked_status or source_untracked)
     return {
         "commit": commit,
         "branch": branch,
-        "dirty": bool(status) if status is not None else None,
+        "dirty": dirty,
+        "ignored_untracked_result_artifacts": (
+            None if result_artifacts is None else len(result_artifacts)
+        ),
     }
 
 

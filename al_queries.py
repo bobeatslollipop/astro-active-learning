@@ -8,6 +8,10 @@ from scipy.spatial.distance import cdist
 from al_data import _timing, mp_probability
 
 
+WASSERSTEIN_L2_QUERY_OBJECTIVE = "voronoi_wwd_plus_full_cell_mass_l2"
+WASSERSTEIN_L2_IMPLEMENTATION_VERSION = 2
+
+
 def query_random(X_pool, clf, n, rng, **kw):
     """Uniform random sampling."""
     return rng.choice(len(X_pool), min(n, len(X_pool)), replace=False)
@@ -171,18 +175,20 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None,
 def query_wasserstein_l2(X_pool, clf, n, rng, *, X_labeled=None, state=None,
                          pool_size=50000, plan_size=None, available_mask=None,
                          reweight_lambda=1.0, **kw):
-    """Greedy Wasserstein query with a Voronoi-L2 mass penalty.
+    """Greedy Wasserstein query with the complete Voronoi-L2 mass penalty.
 
     This follows the same subpool planning structure as ``query_wasserstein``,
     but scores each candidate by
 
-        WWD(S union {u}, T) + lambda * w_u^2
+        WWD(S union {u}, T)
+        + lambda * [w_u^2 + sum_i (w_i - c_{i,u})^2]
 
-    where ``w_u`` is the fraction of target-subpool points whose nearest
-    representative would become the candidate.  The old support's L2 term
-    is shared by all candidates at a greedy step, so the candidate-specific
-    ranking term is exactly this induced mass penalty.  The regularizer is
-    the same lambda used by ``--reweighting voronoi_l2``.
+    Here ``w_i`` is the current nearest-neighbour Voronoi mass of support cell
+    ``i``, ``c_{i,u}`` is the mass candidate ``u`` captures from that cell,
+    and ``w_u = sum_i c_{i,u}``.  This is the full updated-cell penalty for
+    the nearest-neighbour Voronoi plan.  It does not re-optimise the complete
+    regularised transport plan for every candidate.  The regulariser uses the
+    same lambda as ``--reweighting voronoi_l2``.
     """
     if state is None:
         state = {}
@@ -452,8 +458,127 @@ def _wasserstein_delta_update_numpy(wwds, intra_dists, old_base, base_min, chang
         wwds += (new_contribs - old_contribs).sum(axis=1) / ps
 
 
+def _compact_voronoi_cells_numpy(raw_cell_ids):
+    """Map occupied support IDs to a compact range and count their targets."""
+    raw_cell_ids = np.asarray(raw_cell_ids, dtype=np.intp)
+    compact_ids = np.full(len(raw_cell_ids), -1, dtype=np.intp)
+    occupied = raw_cell_ids >= 0
+    if not np.any(occupied):
+        return compact_ids, np.empty(0, dtype=np.float64)
+    _, inverse = np.unique(raw_cell_ids[occupied], return_inverse=True)
+    compact_ids[occupied] = inverse
+    counts = np.bincount(inverse).astype(np.float64, copy=False)
+    return compact_ids, counts
+
+
+def _wasserstein_l2_base_cells_numpy(T, X_labeled):
+    """Return nearest-support distances and compact Voronoi cell state."""
+    ps = len(T)
+    base_min = np.full(ps, np.inf, dtype=np.float32)
+    raw_cell_ids = np.full(ps, -1, dtype=np.intp)
+    if X_labeled is not None and len(X_labeled) > 0:
+        chunk_size = 5000
+        for start in range(0, len(X_labeled), chunk_size):
+            end = min(start + chunk_size, len(X_labeled))
+            dists = cdist(T, X_labeled[start:end], metric="euclidean").astype(
+                np.float32
+            )
+            local_argmin = dists.argmin(axis=1)
+            local_min = dists[np.arange(ps), local_argmin]
+            improved = local_min < base_min
+            base_min[improved] = local_min[improved]
+            raw_cell_ids[improved] = start + local_argmin[improved]
+            del dists
+    cell_ids, cell_counts = _compact_voronoi_cells_numpy(raw_cell_ids)
+    return base_min, cell_ids, cell_counts
+
+
+def _wasserstein_l2_full_penalties_numpy(
+    base_min, intra_dists, cell_ids, cell_counts, row_chunk=None
+):
+    """Evaluate full updated Voronoi mass-squared penalties for all candidates.
+
+    The returned values exclude lambda.  Counts are divided by ``len(T)`` so
+    each result is ``m_u**2 + sum_i (w_i - c_i,u)**2`` in probability-mass
+    units.  Candidate rows are chunked to avoid a global candidate-by-cell
+    count matrix.
+    """
+    ps = len(base_min)
+    if ps == 0:
+        return np.empty(0, dtype=np.float64)
+    cell_ids = np.asarray(cell_ids, dtype=np.intp)
+    cell_counts = np.asarray(cell_counts, dtype=np.float64)
+    n_cells = len(cell_counts)
+    if len(cell_ids) != ps:
+        raise ValueError("cell_ids must have one entry per target point")
+    if np.any(cell_ids >= n_cells):
+        raise ValueError("cell_ids contains an out-of-range compact cell ID")
+
+    if row_chunk is None:
+        target_bytes = 192 * 1024 * 1024
+        bytes_per_row = max(ps * 10 + n_cells * 16, 1)
+        row_chunk = max(1, min(ps, target_bytes // bytes_per_row))
+    elif row_chunk <= 0:
+        raise ValueError("row_chunk must be positive")
+
+    valid_targets = cell_ids >= 0
+    valid_cell_ids = cell_ids[valid_targets]
+    penalties = np.empty(ps, dtype=np.float64)
+    denom_sq = float(ps) ** 2
+
+    for start in range(0, ps, row_chunk):
+        end = min(start + row_chunk, ps)
+        n_rows = end - start
+        captured = intra_dists[start:end] < base_min[np.newaxis, :]
+        captured_totals = captured.sum(axis=1, dtype=np.float64)
+
+        if n_cells > 0:
+            captured_valid = captured[:, valid_targets]
+            flat_indices = (
+                np.arange(n_rows, dtype=np.int64)[:, np.newaxis] * n_cells
+                + valid_cell_ids[np.newaxis, :]
+            ).reshape(-1)
+            captured_by_cell = np.bincount(
+                flat_indices,
+                weights=captured_valid.reshape(-1),
+                minlength=n_rows * n_cells,
+            ).reshape(n_rows, n_cells)
+            captured_by_cell *= -1.0
+            captured_by_cell += cell_counts[np.newaxis, :]
+            np.square(captured_by_cell, out=captured_by_cell)
+            residual_sq = captured_by_cell.sum(axis=1)
+        else:
+            residual_sq = np.zeros(n_rows, dtype=np.float64)
+
+        penalties[start:end] = (
+            np.square(captured_totals) + residual_sq
+        ) / denom_sq
+
+    return penalties
+
+
+def _update_voronoi_cells_numpy(cell_ids, cell_counts, changed):
+    """Move changed target columns into one newly selected candidate cell."""
+    changed = np.asarray(changed, dtype=np.intp)
+    if len(changed) == 0:
+        return cell_counts
+    old_ids = cell_ids[changed]
+    occupied_old = old_ids >= 0
+    if np.any(occupied_old):
+        removed = np.bincount(
+            old_ids[occupied_old], minlength=len(cell_counts)
+        ).astype(np.float64, copy=False)
+        cell_counts = np.asarray(cell_counts, dtype=np.float64).copy()
+        cell_counts -= removed
+    else:
+        cell_counts = np.asarray(cell_counts, dtype=np.float64).copy()
+    new_cell_id = len(cell_counts)
+    cell_ids[changed] = new_cell_id
+    return np.concatenate([cell_counts, np.array([float(len(changed))])])
+
+
 def _wasserstein_l2_initial_capture_counts_numpy(base_min, intra_dists):
-    """Count target points each candidate would capture under current base_min."""
+    """Legacy-v1 total captured mass, retained for objective diagnostics."""
     ps = len(base_min)
     capture_counts = np.empty(ps, dtype=np.float32)
     target_bytes = 256 * 1024 * 1024
@@ -464,27 +589,6 @@ def _wasserstein_l2_initial_capture_counts_numpy(base_min, intra_dists):
             intra_dists[start:end] < base_min[np.newaxis, :]
         ).sum(axis=1)
     return capture_counts
-
-
-def _wasserstein_l2_delta_update_numpy(wwds, capture_counts, intra_dists,
-                                       old_base, base_min, changed):
-    """Apply an incremental WWD and captured-mass update in column chunks."""
-    ps = len(base_min)
-    target_bytes = 256 * 1024 * 1024
-    col_chunk = max(1, min(len(changed), target_bytes // max(ps * 14, 1)))
-    for start in range(0, len(changed), col_chunk):
-        cols = changed[start:start + col_chunk]
-        d_cols = intra_dists[:, cols]
-
-        old_contribs = np.minimum(old_base[cols][np.newaxis, :], d_cols)
-        new_contribs = np.minimum(base_min[cols][np.newaxis, :], d_cols)
-        wwds += (new_contribs - old_contribs).sum(axis=1) / ps
-
-        old_captures = d_cols < old_base[cols][np.newaxis, :]
-        new_captures = d_cols < base_min[cols][np.newaxis, :]
-        capture_counts += (
-            new_captures.sum(axis=1) - old_captures.sum(axis=1)
-        ).astype(np.float32)
 
 
 def _torch_matrix_chunk(length, width, device, *, n_matrices=1, fraction=0.20):
@@ -527,8 +631,139 @@ def _wasserstein_delta_update_torch(wwds, intra_dists, old_base, base_min, chang
         wwds += (new_contribs - old_contribs).sum(dim=1) / ps
 
 
+def _compact_voronoi_cells_torch(raw_cell_ids):
+    """Torch equivalent of ``_compact_voronoi_cells_numpy``."""
+    import torch
+    compact_ids = torch.full_like(raw_cell_ids, -1)
+    occupied = raw_cell_ids >= 0
+    if not torch.any(occupied).item():
+        return compact_ids, torch.empty(
+            0, dtype=torch.float32, device=raw_cell_ids.device
+        )
+    _, inverse, counts = torch.unique(
+        raw_cell_ids[occupied], sorted=True, return_inverse=True, return_counts=True
+    )
+    compact_ids[occupied] = inverse
+    return compact_ids, counts.to(dtype=torch.float32)
+
+
+def _wasserstein_l2_base_cells_torch(T_t, T_sq, X_labeled):
+    """Return nearest-support distances and compact CUDA Voronoi cell state."""
+    import torch
+    device = T_t.device
+    ps = len(T_t)
+    base_min = torch.full((ps,), float("inf"), device=device)
+    raw_cell_ids = torch.full((ps,), -1, dtype=torch.long, device=device)
+    if X_labeled is not None and len(X_labeled) > 0:
+        X_l = torch.as_tensor(
+            X_labeled, dtype=torch.float32, device=device
+        ).contiguous()
+        X_l_sq = (X_l ** 2).sum(dim=1)
+        chunk_size = 10000
+        for start in range(0, len(X_l), chunk_size):
+            end = min(start + chunk_size, len(X_l))
+            dists = T_sq.unsqueeze(1) + X_l_sq[start:end].unsqueeze(0)
+            dists.addmm_(T_t, X_l[start:end].T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+            local_min, local_argmin = dists.min(dim=1)
+            improved = local_min < base_min
+            base_min[improved] = local_min[improved]
+            raw_cell_ids[improved] = start + local_argmin[improved]
+            del dists
+        del X_l, X_l_sq
+        torch.cuda.empty_cache()
+    cell_ids, cell_counts = _compact_voronoi_cells_torch(raw_cell_ids)
+    return base_min, cell_ids, cell_counts
+
+
+def _wasserstein_l2_full_penalties_torch(
+    base_min, intra_dists, cell_ids, cell_counts, row_chunk=None
+):
+    """CUDA full updated Voronoi mass-squared penalties, without lambda."""
+    import torch
+    ps = len(base_min)
+    if ps == 0:
+        return torch.empty(0, dtype=intra_dists.dtype, device=intra_dists.device)
+    n_cells = len(cell_counts)
+    if len(cell_ids) != ps:
+        raise ValueError("cell_ids must have one entry per target point")
+    if n_cells > 0 and torch.any(cell_ids >= n_cells).item():
+        raise ValueError("cell_ids contains an out-of-range compact cell ID")
+
+    if row_chunk is None:
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info(intra_dists.device)
+            target_bytes = int(free_bytes * 0.12)
+        except Exception:
+            target_bytes = 256 * 1024 * 1024
+        bytes_per_row = max(ps * 5 + n_cells * 8, 1)
+        row_chunk = max(1, min(ps, target_bytes // bytes_per_row))
+    elif row_chunk <= 0:
+        raise ValueError("row_chunk must be positive")
+
+    valid_targets = cell_ids >= 0
+    valid_cell_ids = cell_ids[valid_targets]
+    penalties = torch.empty(ps, dtype=intra_dists.dtype, device=intra_dists.device)
+    denom_sq = float(ps) ** 2
+
+    for start in range(0, ps, row_chunk):
+        end = min(start + row_chunk, ps)
+        n_rows = end - start
+        captured = intra_dists[start:end] < base_min.unsqueeze(0)
+        captured_totals = captured.sum(dim=1).to(intra_dists.dtype)
+
+        if n_cells > 0:
+            captured_by_cell = torch.zeros(
+                (n_rows, n_cells),
+                dtype=intra_dists.dtype,
+                device=intra_dists.device,
+            )
+            captured_by_cell.scatter_add_(
+                1,
+                valid_cell_ids.unsqueeze(0).expand(n_rows, -1),
+                captured[:, valid_targets].to(intra_dists.dtype),
+            )
+            captured_by_cell.neg_().add_(cell_counts.unsqueeze(0)).square_()
+            residual_sq = captured_by_cell.sum(dim=1)
+        else:
+            residual_sq = torch.zeros(
+                n_rows, dtype=intra_dists.dtype, device=intra_dists.device
+            )
+
+        penalties[start:end] = (
+            torch.square(captured_totals) + residual_sq
+        ) / denom_sq
+
+    return penalties
+
+
+def _update_voronoi_cells_torch(cell_ids, cell_counts, changed):
+    """CUDA equivalent of ``_update_voronoi_cells_numpy``."""
+    import torch
+    if changed.numel() == 0:
+        return cell_counts
+    old_ids = cell_ids[changed]
+    occupied_old = old_ids >= 0
+    updated_counts = cell_counts.clone()
+    if torch.any(occupied_old).item():
+        removed = torch.bincount(
+            old_ids[occupied_old], minlength=len(cell_counts)
+        ).to(cell_counts.dtype)
+        updated_counts -= removed
+    new_cell_id = len(updated_counts)
+    cell_ids[changed] = new_cell_id
+    return torch.cat([
+        updated_counts,
+        torch.tensor(
+            [float(changed.numel())],
+            dtype=cell_counts.dtype,
+            device=cell_counts.device,
+        ),
+    ])
+
+
 def _wasserstein_l2_initial_capture_counts_torch(base_min, intra_dists):
-    """Count target points each candidate would capture under current base_min."""
+    """Legacy-v1 total captured mass, retained for objective diagnostics."""
     import torch
     ps = len(base_min)
     device = base_min.device
@@ -540,29 +775,6 @@ def _wasserstein_l2_initial_capture_counts_torch(base_min, intra_dists):
             intra_dists[start:end] < base_min.unsqueeze(0)
         ).sum(dim=1).to(intra_dists.dtype)
     return capture_counts
-
-
-def _wasserstein_l2_delta_update_torch(wwds, capture_counts, intra_dists,
-                                      old_base, base_min, changed):
-    """Apply an incremental WWD and captured-mass update in column chunks."""
-    import torch
-    ps = len(base_min)
-    device = base_min.device
-    col_chunk = _torch_matrix_chunk(len(changed), ps, device,
-                                    n_matrices=4, fraction=0.10)
-    for start in range(0, len(changed), col_chunk):
-        cols = changed[start:start + col_chunk]
-        d_cols = intra_dists[:, cols]
-
-        old_contribs = torch.minimum(old_base[cols].unsqueeze(0), d_cols)
-        new_contribs = torch.minimum(base_min[cols].unsqueeze(0), d_cols)
-        wwds += (new_contribs - old_contribs).sum(dim=1) / ps
-
-        old_captures = d_cols < old_base[cols].unsqueeze(0)
-        new_captures = d_cols < base_min[cols].unsqueeze(0)
-        capture_counts += (
-            new_captures.sum(dim=1) - old_captures.sum(dim=1)
-        ).to(capture_counts.dtype)
 
 
 def _wasserstein_coupling_numpy(T, X_labeled, n_pick, rng):
@@ -680,34 +892,30 @@ def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
 
 
 def _wasserstein_l2_coupling_numpy(T, X_labeled, n_pick, reweight_lambda):
-    """CPU greedy coupling for WWD + lambda * captured_mass^2."""
+    """CPU full-Voronoi-L2 greedy coupling (implementation version 2)."""
     ps = len(T)
     lam = float(reweight_lambda)
 
     intra_dists = cdist(T, T, metric='euclidean').astype(np.float32)
+    base_min, cell_ids, cell_counts = _wasserstein_l2_base_cells_numpy(
+        T, X_labeled
+    )
 
-    base_min = np.full(ps, np.inf, dtype=np.float32)
-    if X_labeled is not None and len(X_labeled) > 0:
-        CHUNK = 5000
-        for start in range(0, len(X_labeled), CHUNK):
-            end = min(start + CHUNK, len(X_labeled))
-            dists = cdist(T, X_labeled[start:end], metric='euclidean').astype(np.float32)
-            np.minimum(base_min, dists.min(axis=1), out=base_min)
-            del dists
-
-    print(f"  [CPU] Wasserstein-L2 coupling: pool_size={ps}, "
-          f"lambda={lam:g}, selecting {n_pick}")
+    print(f"  [CPU] Full-Voronoi-L2 coupling v2: pool_size={ps}, "
+          f"lambda={lam:g}, selecting {n_pick}, "
+          f"occupied_cells={len(cell_counts)}")
 
     wwds = _wasserstein_initial_wwds_numpy(base_min, intra_dists)
-    capture_counts = _wasserstein_l2_initial_capture_counts_numpy(base_min, intra_dists)
 
     chosen = []
     available = np.ones(ps, dtype=bool)
-    denom = float(max(ps, 1))
 
-    for _ in range(n_pick):
-        masses = np.maximum(capture_counts, 0.0) / denom
-        scores = wwds + lam * (masses ** 2)
+    for step in range(n_pick):
+        score_t0 = time.perf_counter()
+        penalties = _wasserstein_l2_full_penalties_numpy(
+            base_min, intra_dists, cell_ids, cell_counts
+        )
+        scores = wwds.astype(np.float64, copy=False) + lam * penalties
         scores[~available] = np.inf
 
         best = int(np.argmin(scores))
@@ -722,15 +930,27 @@ def _wasserstein_l2_coupling_numpy(T, X_labeled, n_pick, reweight_lambda):
         changed = np.where(base_min < old_base)[0]
 
         if len(changed) > 0:
-            _wasserstein_l2_delta_update_numpy(
-                wwds, capture_counts, intra_dists, old_base, base_min, changed
+            cell_counts = _update_voronoi_cells_numpy(
+                cell_ids, cell_counts, changed
             )
+            _wasserstein_delta_update_numpy(
+                wwds, intra_dists, old_base, base_min, changed
+            )
+
+        print(
+            f"    [CPU] Full-Voronoi-L2 step {step + 1}/{n_pick}: "
+            f"best={best}, score={scores[best]:.7g}, "
+            f"transport={float(wwds[best]):.7g}, "
+            f"mass_penalty={penalties[best]:.7g}, "
+            f"captured={len(changed)}, occupied_cells={len(cell_counts)}, "
+            f"score_time={time.perf_counter() - score_t0:.3f}s"
+        )
 
     return chosen
 
 
 def _wasserstein_l2_coupling_torch(T, X_labeled, n_pick, reweight_lambda):
-    """GPU greedy coupling for WWD + lambda * captured_mass^2."""
+    """CUDA full-Voronoi-L2 greedy coupling (implementation version 2)."""
     import torch
     device = torch.device('cuda')
     ps = len(T)
@@ -743,34 +963,25 @@ def _wasserstein_l2_coupling_torch(T, X_labeled, n_pick, reweight_lambda):
     intra_dists.addmm_(T_t, T_t.T, beta=1.0, alpha=-2.0)
     intra_dists.clamp_(min=0.0).sqrt_()
 
-    base_min = torch.full((ps,), float('inf'), device=device)
-    if X_labeled is not None and len(X_labeled) > 0:
-        X_l = torch.tensor(X_labeled, dtype=torch.float32, device=device)
-        X_l_sq = (X_l ** 2).sum(dim=1)
-        CHUNK = 10000
-        for start in range(0, len(X_l), CHUNK):
-            end = min(start + CHUNK, len(X_l))
-            dists = T_sq.unsqueeze(1) + X_l_sq[start:end].unsqueeze(0)
-            dists.addmm_(T_t, X_l[start:end].T, beta=1.0, alpha=-2.0)
-            dists.clamp_(min=0.0).sqrt_()
-            torch.minimum(base_min, dists.min(dim=1)[0], out=base_min)
-            del dists
-        del X_l, X_l_sq
-        torch.cuda.empty_cache()
+    base_min, cell_ids, cell_counts = _wasserstein_l2_base_cells_torch(
+        T_t, T_sq, X_labeled
+    )
 
-    print(f"  [GPU] Wasserstein-L2 coupling: pool_size={ps}, "
-          f"lambda={lam:g}, selecting {n_pick}")
+    print(f"  [GPU] Full-Voronoi-L2 coupling v2: pool_size={ps}, "
+          f"lambda={lam:g}, selecting {n_pick}, "
+          f"occupied_cells={len(cell_counts)}")
 
     wwds = _wasserstein_initial_wwds_torch(base_min, intra_dists)
-    capture_counts = _wasserstein_l2_initial_capture_counts_torch(base_min, intra_dists)
 
     chosen = []
     available = torch.ones(ps, dtype=torch.bool, device=device)
-    denom = float(max(ps, 1))
 
-    for _ in range(n_pick):
-        masses = torch.clamp(capture_counts, min=0.0) / denom
-        scores = wwds + lam * (masses ** 2)
+    for step in range(n_pick):
+        score_t0 = time.perf_counter()
+        penalties = _wasserstein_l2_full_penalties_torch(
+            base_min, intra_dists, cell_ids, cell_counts
+        )
+        scores = wwds + lam * penalties
         scores = scores.clone()
         scores[~available] = float('inf')
 
@@ -786,11 +997,23 @@ def _wasserstein_l2_coupling_torch(T, X_labeled, n_pick, reweight_lambda):
         changed = torch.where(base_min < old_base)[0]
 
         if len(changed) > 0:
-            _wasserstein_l2_delta_update_torch(
-                wwds, capture_counts, intra_dists, old_base, base_min, changed
+            cell_counts = _update_voronoi_cells_torch(
+                cell_ids, cell_counts, changed
+            )
+            _wasserstein_delta_update_torch(
+                wwds, intra_dists, old_base, base_min, changed
             )
 
-    del T_t, intra_dists, wwds, capture_counts
+        print(
+            f"    [GPU] Full-Voronoi-L2 step {step + 1}/{n_pick}: "
+            f"best={best}, score={scores[best].item():.7g}, "
+            f"transport={wwds[best].item():.7g}, "
+            f"mass_penalty={penalties[best].item():.7g}, "
+            f"captured={changed.numel()}, occupied_cells={len(cell_counts)}, "
+            f"score_time={time.perf_counter() - score_t0:.3f}s"
+        )
+
+    del T_t, intra_dists, wwds, penalties, cell_ids, cell_counts
     torch.cuda.empty_cache()
     return chosen
 

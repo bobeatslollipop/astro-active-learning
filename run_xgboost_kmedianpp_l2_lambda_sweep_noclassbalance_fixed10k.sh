@@ -23,8 +23,7 @@ N_TRIALS=5
 N_SNAPSHOTS=15
 SOFT_TOPK=20
 REWEIGHT_POOL=100000
-VORONOI_L2_MAX_ITER=8
-VORONOI_L2_INITIAL_MAX_ITER=16
+VORONOI_L2_MAX_ITER=128
 
 LAMBDAS=(100 1000 10000 100000 1000000)
 
@@ -102,7 +101,6 @@ for lambda in "${LAMBDAS[@]}"; do
     --reweight-pool-size "$REWEIGHT_POOL" \
     --reweight-lambda "$lambda" \
     --voronoi-l2-max-iter "$VORONOI_L2_MAX_ITER" \
-    --voronoi-l2-initial-max-iter "$VORONOI_L2_INITIAL_MAX_ITER" \
     --out-dir "$out_dir"
 done
 

@@ -189,7 +189,7 @@ Use python active_learning.py --help for the complete option list.
 | entropy | Predictive-entropy sampling. |
 | margin | Smallest decision-function margin. |
 | wasserstein | Greedy geometric coverage on a random target/candidate subpool. |
-| wasserstein_l2 | Wasserstein coverage plus a captured-mass L2 surrogate. |
+| wasserstein_l2 | Wasserstein coverage plus the complete updated Voronoi cell-mass L2 penalty. |
 | entropicOT | Temperature-controlled entropic transport variant. |
 | kmedianpp | k-median++ geometric coverage baseline. |
 | moment_matching | Ridge-design selection that reduces feature-moment mismatch. |
@@ -200,18 +200,46 @@ rebuilds plans according to wass_plan_size.
 
 ### Wasserstein-L2 interpretation
 
-The current Wasserstein-L2 query score is a pointwise greedy captured-mass
-surrogate. It combines the unregularized coverage improvement with an L2
-penalty based on the target mass captured by the new candidate.
+Current implementation version 2 scores every candidate using nearest-neighbour
+Wasserstein coverage plus the squared masses of all Voronoi cells after adding
+that candidate:
 
-It does not re-solve the complete regularized support-weight objective for every
-candidate. The later Voronoi-L2 reweighting step does solve a fixed-support
-dual, but that does not make the preceding candidate ranking exact. Therefore,
-results should be described as Wasserstein-L2 surrogate greedy rather than
-exact regularized greedy.
+~~~text
+WWD(S union {u}, T) + lambda * [m_u^2 + sum_i (w_i - c_i,u)^2]
+~~~
+
+The candidate-target distance matrix is reused, while candidate-by-cell capture
+counts are reduced in bounded chunks. Historical runs without
+`query_implementation_version` used version 1, which penalized only the new
+candidate's captured mass. Those existing artifacts are not rewritten or
+reinterpreted as version 2.
+
+Version 2 is the complete L2 penalty for the nearest-neighbour Voronoi plan. It
+still does not re-solve the transport plan and all support weights for every
+candidate. The later Voronoi-L2 reweighting solve therefore does not make the
+preceding ranking exact. Describe it as full-Voronoi-L2 greedy, not exact
+regularized-OT greedy.
 
 The CLI enforces that strategy=wasserstein_l2 is paired with
 reweighting=voronoi_l2 and a positive shared regularization value.
+
+For small-scale auditing, `diagnose_wasserstein_l2_objectives.py` compares
+historical captured-mass v1, full-Voronoi v2, and candidate-wise solves of the
+complete regularized objective:
+
+~~~bash
+python diagnose_wasserstein_l2_objectives.py \
+  --support-size 6 \
+  --pool-size 12 \
+  --n-pick 3 \
+  --reweight-lambda 100 \
+  --out-dir results/diagnostics/wasserstein_l2_exact_oracle
+~~~
+
+The diagnostic writes JSON, CSV, and text summaries. It calls a winner exact
+only when one candidate's feasible primal upper bound is strictly below every
+competitor's dual lower bound; overlapping intervals are reported as
+`unresolved`.
 
 ## Reweighting methods
 
@@ -227,6 +255,19 @@ reweighting=voronoi_l2 and a positive shared regularization value.
 The raw reweighting distribution and the final training weights are distinct.
 After reweighting, the training layer can optionally enforce an MP/MR total
 weight ratio and always normalizes to the selected training-weight total.
+
+Voronoi-L2 uses one convergence policy for the initial and warm-started solves:
+at most 128 accepted L-BFGS updates, with early stopping after two consecutive
+absolute dual-objective improvements below `1e-4`. A gradient infinity norm at
+or below `1e-5` also stops the solve. Override the budget or objective rule with
+`--voronoi-l2-max-iter`, `--voronoi-l2-objective-tol`, and
+`--voronoi-l2-objective-patience`.
+
+Every accepted iterate is printed and appended to the run-local
+`optimizer.log`. The same records are saved by trial and query snapshot in
+`optimizer_trace_trials.json`, including the minimized dual objective, a
+feasible primal upper bound, dual lower bound, primal-dual gap, gradient
+infinity norm, raw weight sum, stopping reason, and elapsed time.
 
 ## Evaluation and reproducibility
 
@@ -362,6 +403,7 @@ extremely concentrated.
 
 Important current runners include:
 
+- run_xgboost_noclassbalance_100k_warm_eval30_v2.sh
 - run_xgboost_kmedianpp_l2_lambda_sweep_noclassbalance_fixed10k.sh
 - run_xgboost_wasserstein_l2_noclassbalance_reweightfull_eval15.sh
 - run_xgboost_noclassbalance_matched_baselines.sh
@@ -418,10 +460,12 @@ query budget, evaluation schedule, model hyperparameters, and trial count.
 
 ## Known limitations
 
-- Wasserstein-L2 querying is a captured-mass surrogate, not an exact
-  candidate-wise solution of the full regularized objective.
-- Voronoi-L2 optimization uses a bounded L-BFGS iteration budget; convergence
-  should be checked when optimizer accuracy matters.
+- Wasserstein-L2 v2 uses the full updated nearest-neighbour Voronoi mass
+  penalty, but is not a candidate-wise solution of the complete regularized
+  transport objective. Historical unversioned runs used captured-mass v1.
+- Voronoi-L2 stops using explicit objective/gradient criteria or the 128-update
+  ceiling; inspect `optimizer_trace_trials.json` before treating a ceiling hit
+  as convergence.
 - Historical schema-v1 params files predate environment, Git-state, and hash
   metadata; only facts recoverable from the artifacts are annotated.
 - The preserved full-dataset baseline was originally trained with MP = 1 even

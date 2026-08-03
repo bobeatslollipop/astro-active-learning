@@ -35,6 +35,7 @@ venv/
 !/results/**/auc_trials.json
 !/results/**/query_plan_trials.json
 !/results/**/weight_stats_trials.json
+!/results/**/optimizer_trace_trials.json
 !/results/**/diagnostics.json
 !/results/**/xgb_deeper_train_eval_pr_metrics.json
 !/results/**/final_weights.csv

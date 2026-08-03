@@ -25,8 +25,17 @@ from al_models import (
     train_ridge_classifier,
     train_xgboost_classifier,
 )
-from al_metadata import build_active_params, update_params_status, write_params
-from al_queries import STRATEGIES
+from al_metadata import (
+    atomic_write_json,
+    build_active_params,
+    update_params_status,
+    write_params,
+)
+from al_queries import (
+    STRATEGIES,
+    WASSERSTEIN_L2_IMPLEMENTATION_VERSION,
+    WASSERSTEIN_L2_QUERY_OBJECTIVE,
+)
 from al_reporting import (
     _compute_reweight_stats,
     _generated_figure_path,
@@ -75,6 +84,8 @@ def run_active_learning(args):
             )
         if args.reweight_lambda <= 0:
             raise ValueError("--strategy wasserstein_l2 requires --reweight-lambda > 0.")
+        args.query_objective = WASSERSTEIN_L2_QUERY_OBJECTIVE
+        args.query_implementation_version = WASSERSTEIN_L2_IMPLEMENTATION_VERSION
 
     os.makedirs(args.out_dir, exist_ok=True)
     t0 = time.perf_counter()
@@ -249,6 +260,34 @@ def run_active_learning(args):
     )
     write_params(args.out_dir, run_params)
 
+    optimizer_trace_data = None
+    optimizer_log_path = None
+    if args.reweighting == "voronoi_l2":
+        optimizer_log_path = os.path.join(args.out_dir, "optimizer.log")
+        with open(optimizer_log_path, "w", encoding="utf-8"):
+            pass
+        optimizer_trace_data = {
+            "schema_version": 1,
+            "optimizer": "voronoi_l2_lbfgs",
+            "dual_objective_convention": "minimize_negative_dual",
+            "max_iter": int(args.voronoi_l2_max_iter),
+            "objective_tolerance": float(args.voronoi_l2_objective_tol),
+            "objective_patience": int(args.voronoi_l2_objective_patience),
+            "gradient_tolerance": 1e-5,
+            "trials": [],
+        }
+        atomic_write_json(
+            os.path.join(args.out_dir, "optimizer_trace_trials.json"),
+            optimizer_trace_data,
+        )
+
+    def emit_optimizer_trace(line):
+        print(line, flush=True)
+        if optimizer_log_path is not None:
+            with open(optimizer_log_path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+                handle.flush()
+
     # 4. Pre-allocate labeled arrays (reused across trials)
     max_labeled = len(X_warm) + args.total_queries
     n_features = X_warm.shape[1]
@@ -310,6 +349,15 @@ def run_active_learning(args):
             print(f"{'=' * 60}")
 
         rng = np.random.RandomState(args.seed + trial)
+        trial_optimizer_trace = None
+        if optimizer_trace_data is not None:
+            trial_optimizer_trace = {
+                "trial_index": int(trial),
+                "trial": int(trial + 1),
+                "seed": int(args.seed + trial),
+                "solves": [],
+            }
+            optimizer_trace_data["trials"].append(trial_optimizer_trace)
         query_rng = (
             np.random.RandomState(args.seed + trial)
             if args.strategy == "kmedianpp"
@@ -396,16 +444,36 @@ def run_active_learning(args):
             elif args.reweighting == "voronoi_l2":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Voronoi-L2 weights"
-                l2_max_iter = args.voronoi_l2_max_iter
-                if "z" not in voronoi_l2_state:
-                    l2_max_iter = args.voronoi_l2_initial_max_iter
                 print(f"  [Voronoi-L2] Computing sample weights (λ={args.reweight_lambda}, "
-                      f"max_iter={l2_max_iter}, "
+                      f"max_iter={args.voronoi_l2_max_iter}, "
+                      f"objective_tol={args.voronoi_l2_objective_tol:g}, "
+                      f"patience={args.voronoi_l2_objective_patience}, "
                       f"{n_labeled} labeled vs {len(X_reweight_pool)} target rows"
                       f"{f' (subsampled from {reweight_source_full_n})' if len(X_reweight_pool) < reweight_source_full_n else ''})...")
+                solve_index = len(trial_optimizer_trace["solves"]) + 1
                 sw = compute_voronoi_l2_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                                 state=voronoi_l2_state,
-                                                max_iter=l2_max_iter)
+                                                max_iter=args.voronoi_l2_max_iter,
+                                                objective_tol=args.voronoi_l2_objective_tol,
+                                                objective_patience=args.voronoi_l2_objective_patience,
+                                                gradient_tol=1e-5,
+                                                trace_context={
+                                                    "trial_index": int(trial),
+                                                    "trial": int(trial + 1),
+                                                    "seed": int(args.seed + trial),
+                                                    "n_queries": int(n_queries),
+                                                    "solve": int(solve_index),
+                                                    "n_labeled": int(n_labeled),
+                                                    "target_rows": int(len(X_reweight_pool)),
+                                                },
+                                                trace_logger=emit_optimizer_trace)
+                trial_optimizer_trace["solves"].append(
+                    voronoi_l2_state["last_optimizer_trace"]
+                )
+                atomic_write_json(
+                    os.path.join(args.out_dir, "optimizer_trace_trials.json"),
+                    optimizer_trace_data,
+                )
             elif args.reweighting == "kl":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "KL weights"
@@ -414,7 +482,7 @@ def run_active_learning(args):
                       f"{f' (subsampled from {reweight_source_full_n})' if len(X_reweight_pool) < reweight_source_full_n else ''})...")
                 sw = compute_kl_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                         state=kl_state,
-                                        max_iter=args.voronoi_l2_max_iter)
+                                        max_iter=15)
             elif args.reweighting == "moment_l2":
                 reweight_t0 = time.perf_counter()
                 reweight_label = "Moment-L2 weights"
@@ -695,6 +763,11 @@ def run_active_learning(args):
         "eval_every": int(args.eval_every),
         "trial_query_plans": all_trial_query_plans,
     }
+    if args.strategy == "wasserstein_l2":
+        query_plan_data.update({
+            "query_objective": args.query_objective,
+            "query_implementation_version": int(args.query_implementation_version),
+        })
     with open(os.path.join(args.out_dir, "query_plan_trials.json"), "w") as f:
         json.dump(query_plan_data, f, indent=2)
 

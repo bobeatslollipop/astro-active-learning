@@ -15,7 +15,8 @@ top level:
 The result tree is ignored by default.  `.gitignore` opts in compact artifacts
 that are useful for reproduction and later analysis:
 
-- `params.json`, `results.json`, and multi-trial JSON files
+- `params.json`, `results.json`, and multi-trial JSON files, including
+  `optimizer_trace_trials.json`
 - small numeric CSV summaries and final model weights/importances
 - diagnostic JSON, CSV, and text summaries
 - archived README files and launch scripts
@@ -25,6 +26,18 @@ Per-run plots under `figures/generated/`, logs, large raw arrays, model
 checkpoints, and full top-candidate tables stay on the local machine.  They can
 be regenerated from the tracked numeric artifacts or rerun from the recorded
 parameters.
+
+Voronoi-L2 runs also write two convergence artifacts. `optimizer.log` is a
+local, line-buffered text trace. `optimizer_trace_trials.json` is the compact
+tracked representation, grouped by trial and solve. The optimizer minimizes
+the stored `dual_objective`; the corresponding lower bound is
+`dual_lower_bound = -dual_objective`, and `primal_dual_gap` is the difference
+between the recorded feasible primal upper bound and that dual lower bound.
+
+The small-scale Wasserstein-L2 objective audit writes `diagnostics.json`,
+`diagnostics.csv`, and `summary.txt` below `diagnostics/`. Candidate-wise
+regularized-OT results are called exact only when their primal/dual intervals
+certify a unique winner; an overlapping comparison is recorded as unresolved.
 
 Before adding a new artifact type, check whether it is compact and genuinely
 needed for analysis.  Add a narrow allow rule instead of unignoring an entire
