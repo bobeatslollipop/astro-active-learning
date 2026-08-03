@@ -37,7 +37,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgboost_voronoi_l2_sampling_${TOTAL_QUERIES}q_10seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgboost_voronoi_l2_sampling_${TOTAL_QUERIES}q_10seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 OLD_WASS_DIR="${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}"
 NEW_WASS_DIR="${RESULT_ROOT}/al_xgb_wasserstein_l2_replan10_${TOTAL_QUERIES}"
 
@@ -91,7 +93,7 @@ echo "============================================================"
 python compare_auc_trials.py \
   "$OLD_WASS_DIR" \
   "$NEW_WASS_DIR" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_l2_cached_vs_replan10_auc.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_cached_vs_replan10_auc.png" \
   --labels "Wasserstein-L2 cached 200-query plan" "Wasserstein-L2 replan every 10 queries" \
   --cmap-runs none
 

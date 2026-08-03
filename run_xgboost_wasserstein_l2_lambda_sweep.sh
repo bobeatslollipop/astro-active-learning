@@ -41,7 +41,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgb_wasserstein_l2_lambdaMP1_fullheldout_initialweightsum_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgb_wasserstein_l2_lambdaMP1_fullheldout_initialweightsum_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 
 for lambda in "${LAMBDAS[@]}"; do
   out_dir="${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"
@@ -101,7 +103,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_average_precision.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_lambda_sweep_average_precision.png" \
   --metric average_precision \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" \
   --cmap-runs viridis
@@ -111,7 +113,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_pr_auc_trapz.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_lambda_sweep_pr_auc_trapz.png" \
   --metric pr_auc \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" \
   --cmap-runs viridis
@@ -121,7 +123,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_effective_sample_size.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_lambda_sweep_effective_sample_size.png" \
   --metric effective_sample_size \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5"
 

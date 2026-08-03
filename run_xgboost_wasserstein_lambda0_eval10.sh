@@ -37,7 +37,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="Jul24-wass-lambda"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/Jul24-wass-lambda"
+mkdir -p "${RESULT_ROOT}/figures/final"
 OUT_DIR="${RESULT_ROOT}/al_xgb_wasserstein_hard_150_lambda_0_eval10"
 
 if [[ -e "$OUT_DIR" ]] && [[ -n "$(find "$OUT_DIR" -mindepth 1 -print -quit)" ]]; then
@@ -98,7 +100,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_150_lambda_1000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_150_lambda_3000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_150_lambda_10000" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_lambda0_vs_l2_pr_auc_trapz.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_lambda0_vs_l2_pr_auc_trapz.png" \
   --metric pr_auc \
   --labels "lambda=0 hard" "lambda=300" "lambda=1e3" "lambda=3e3" "lambda=1e4" \
   --cmap-runs viridis
@@ -109,7 +111,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_150_lambda_1000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_150_lambda_3000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_150_lambda_10000" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_lambda0_vs_l2_effective_sample_size.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_lambda0_vs_l2_effective_sample_size.png" \
   --metric effective_sample_size \
   --labels "lambda=0 hard" "lambda=300" "lambda=1e3" "lambda=3e3" "lambda=1e4"
 

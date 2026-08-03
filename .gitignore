@@ -1,10 +1,54 @@
+# Local datasets
 *.h5
-.DS_Store
+*.hdf5
 
-# Ignore all subdirectories except data_visualization
-/*/
-!/data_visualization/
-!/low_temp_training/
-!/random_training/
-!/linear_0.1/
-!/xgboost_full_eval/
+# Python environments and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editor, OS, and local Codex state
+.DS_Store
+/.agents/
+/.codex/
+
+# Runtime logs
+*.log
+
+# Experiment artifacts are opt-in: keep compact, analysis-ready records and
+# final comparison figures, while leaving regenerable or large artifacts local.
+/results/**
+!/results/
+!/results/**/
+
+# Documentation and archived launchers
+!/results/**/*.md
+!/results/**/*.sh
+
+# Compact structured results
+!/results/**/params.json
+!/results/**/results.json
+!/results/**/auc_trials.json
+!/results/**/query_plan_trials.json
+!/results/**/weight_stats_trials.json
+!/results/**/diagnostics.json
+!/results/**/xgb_deeper_train_eval_pr_metrics.json
+!/results/**/final_weights.csv
+!/results/**/model_comparison.csv
+!/results/**/precision_at_k.csv
+!/results/**/diagnostics.csv
+!/results/**/summary.txt
+
+# Curated family-level figures only
+!/results/**/figures/final/
+!/results/**/figures/final/*.png
+
+# Explicitly local, even inside otherwise visible result directories
+/results/**/figures/generated/
+/results/**/logs/
+/results/logs/
+/results/**/top_candidates_*.csv

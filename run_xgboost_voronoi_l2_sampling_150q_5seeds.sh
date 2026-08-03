@@ -38,7 +38,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="Jul23-xgb-sampling-150q"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/Jul23-xgb-sampling-150q"
+mkdir -p "${RESULT_ROOT}/figures/final"
 
 # This is a replacement run; clear any previous partial output for this root.
 rm -rf "$RESULT_ROOT"
@@ -104,7 +106,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}" \
   "${RESULT_ROOT}/al_xgb_random_l2_${TOTAL_QUERIES}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}" \
-  --out "${RESULT_ROOT}/xgb_voronoi_l2_sampling_${TOTAL_QUERIES}q_auc.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_voronoi_l2_sampling_${TOTAL_QUERIES}q_auc.png" \
   --labels "XGB kmedian++ + Voronoi-L2" "XGB random + Voronoi-L2" "XGB Wasserstein-L2 + Voronoi-L2" \
   --cmap-runs none
 
@@ -118,7 +120,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_random_l2_${TOTAL_QUERIES}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}" \
   --metric effective_sample_size \
-  --out "${RESULT_ROOT}/xgb_voronoi_l2_sampling_${TOTAL_QUERIES}q_effective_sample_size.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_voronoi_l2_sampling_${TOTAL_QUERIES}q_effective_sample_size.png" \
   --labels "XGB kmedian++ + Voronoi-L2" "XGB random + Voronoi-L2" "XGB Wasserstein-L2 + Voronoi-L2"
 
 echo ""

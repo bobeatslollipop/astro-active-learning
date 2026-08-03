@@ -30,7 +30,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgboost_wasserstein_l2_lambda_sweep_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgboost_wasserstein_l2_lambda_sweep_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 RANDOM_OUT_DIR="${RESULT_ROOT}/al_xgb_random_none_${TOTAL_QUERIES}"
 
 rm -rf "$RANDOM_OUT_DIR"
@@ -82,7 +84,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_1000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_3000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_10000" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_auc.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_lambda_sweep_auc.png" \
   --labels "random + uniform" "lambda=300" "lambda=1e3" "lambda=3e3" "lambda=1e4" \
   --cmap-runs viridis
 
@@ -92,7 +94,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_1000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_3000" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_10000" \
-  --out "${RESULT_ROOT}/xgb_wasserstein_l2_lambda_sweep_effective_sample_size.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_lambda_sweep_effective_sample_size.png" \
   --metric effective_sample_size \
   --labels "random + uniform" "lambda=300" "lambda=1e3" "lambda=3e3" "lambda=1e4"
 

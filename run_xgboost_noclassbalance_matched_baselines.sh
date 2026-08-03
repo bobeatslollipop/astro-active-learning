@@ -44,7 +44,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgb_wasserstein_l2_noclassbalance_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgb_wasserstein_l2_noclassbalance_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}"
+mkdir -p "${RESULT_ROOT}/figures/final"
 WASS_NONE_OUT="${RESULT_ROOT}/al_xgb_wasserstein_none_${TOTAL_QUERIES}_lambda_0_queryonly"
 KMED_L2_OUT="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_100"
 RANDOM_NONE_OUT="${RESULT_ROOT}/al_xgb_random_none_${TOTAL_QUERIES}_lambda_inf"
@@ -152,7 +154,7 @@ python compare_auc_trials.py \
   "$WASS_NONE_OUT" \
   "$KMED_L2_OUT" \
   "$RANDOM_NONE_OUT" \
-  --out "${RESULT_ROOT}/xgb_noclassbalance_matched_baselines_average_precision.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_noclassbalance_matched_baselines_average_precision.png" \
   --metric average_precision \
   --labels \
     "Wass hard lambda=0" \
@@ -174,7 +176,7 @@ python compare_auc_trials.py \
   "$WASS_NONE_OUT" \
   "$KMED_L2_OUT" \
   "$RANDOM_NONE_OUT" \
-  --out "${RESULT_ROOT}/xgb_noclassbalance_matched_baselines_pr_auc_trapz.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_noclassbalance_matched_baselines_pr_auc_trapz.png" \
   --metric pr_auc \
   --labels \
     "Wass hard lambda=0" \

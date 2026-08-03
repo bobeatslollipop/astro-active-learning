@@ -1,196 +1,430 @@
 # Astro Active Learning
 
-## Project Structure
+Active-learning experiments for identifying metal-poor stars from Gaia BP/RP
+features under severe class imbalance and a biased low-temperature warm start.
 
-This project implements an active learning framework for stellar classification, focusing on identifying metal-poor stars from imbalanced and biased datasets.
+The repository is organized as a research workflow rather than an installable
+Python package: one command-line entry point, several focused implementation
+modules, shell runners for reproducible experiment families, and checked-in
+summaries of completed runs.
 
-*   **`active_learning.py`**: The core active learning loop. It supports query strategies (`random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `wasserstein_l2`, `entropicOT`, `kmedianpp`, `moment_matching`), final models (`logistic`, `ridge`, `xgboost`), and dataset-shift reweighting (`none`, `hard`, `soft`, `voronoi_l2`, `kl`, `moment_l2`).
-*   **`run_experiments.sh`, `run_voronoi_l2_sweep.sh`, `run_moment_sweep.sh`**: Shell scripts for batch active-learning runs, Voronoi-L2 reweighting sweeps, and linear moment-L2 sweeps.
-*   **`linear_classifier.py`, `linear_regression.py`, `two_layers.py`**: Baseline model training scripts (logistic regression, linear regression, and a 2-layer neural network) for training on fixed datasets.
-*   **`compare_auc_trials.py`**: A plotting utility to compare PR-AUC learning curves across multiple active learning runs.
-*   **`visualize_embedding.py`, `visualize_feh_dist.py`**: Utilities for UMAP/t-SNE embedding visualizations and plotting metallicity ([Fe/H]) distributions.
-*   **`normalize_h5.py`**: Script to L2-normalize the stellar spectra features in the HDF5 datasets.
-*   **`experiment_results_100/`, `experiment_results_6k/`**: Output directories containing logs, weights, and plots from active learning experiments.
-*   **`random_training/`, `low_temp_training/`**: Scripts and data splits for baseline model training.
+## Scientific setup
 
-## Dataset Preparation
+The default task is binary stellar metallicity classification:
 
-Active-learning runs use `bp_rp_lamost_normalized.h5` and the biased warm-start file `bp_rp_lamost_normalized_low_teff.h5`. For fixed-dataset baseline scripts, generate a random train/test split with:
+- metal poor (MP): Fe/H < -2
+- metal rich (MR): Fe/H >= -2
+- active-learning convention: MP = 0 and MR = 1
+- features: 55 BP coefficients, 55 RP coefficients, and E(B-V)
 
-```bash
+The local full dataset contains 5,283,562 valid rows, including 10,201 MP
+stars. The default warm-start file contains 450,000 low-temperature rows,
+including 1,580 MP stars. This creates both extreme class imbalance and a
+covariate shift between the initial labeled set and the full population.
+
+All current code uses the same canonical encoding: MP = 0 and MR = 1. Metric
+helpers explicitly convert MP into the positive metric target and locate its
+probability through `model.classes_`, so the scientific positive class does not
+depend on a hard-coded probability column. The one preserved historical
+full-dataset run used MP = 1 at training time; its params file records both that
+legacy provenance and the current project convention.
+
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| active_learning.py | Stable CLI and backward-compatible import surface. |
+| al_data.py | HDF5 loading, feature ordering, normalization, and runtime helpers. |
+| al_queries.py | Random, uncertainty, Wasserstein-family, k-median++, and moment-matching query strategies. |
+| al_reweighting.py | Hard/soft Voronoi, Voronoi-L2, KL, and moment-L2 sample weights. |
+| al_models.py | Training-weight normalization and Logistic, Ridge, and XGBoost classifiers. |
+| al_reporting.py | Metrics, trial summaries, plots, and final model summaries. |
+| al_runner.py | Data splitting, multi-trial orchestration, snapshot training, and artifact writing. |
+| al_metadata.py | Single-file params schema, fingerprints, hashes, Git state, and environment metadata. |
+| compare_auc_trials.py | Compare PR-AUC or average-precision curves across runs. |
+| compare_weight_l2_trials.py | Compare weight concentration and effective sample size. |
+| run_xgboost_full_eval.py | Supervised full-dataset model-family benchmark. |
+| run_*.sh | Reproducible experiment families and comparison-plot generation. |
+| normalize_h5.py | Create coefficient-normalized HDF5 data. |
+| low_temp_training/ | Build the biased low-temperature warm-start data. |
+| random_training/ | Build fixed random train/test baseline datasets. |
+| visualize_embedding.py | PCA, t-SNE, or UMAP views of the feature space. |
+| visualize_feh_dist.py | Fe/H distribution visualization. |
+| results/active_learning/ | Active-learning families and their individual runs. |
+| results/full_data/ | Supervised full-dataset benchmarks. |
+| results/diagnostics/ | Optimizer and implementation diagnostics. |
+| results/archive/ | Self-contained archives of older completed runs. |
+| results/logs/ | Local-only long-running experiment logs. |
+
+Result directories no longer live at repository root. Their names are useful
+hints, but `params.json` is the authoritative description of a run. See
+`results/README.md` for the artifact tracking policy.
+
+## Environment
+
+Python 3.10 or 3.11 is recommended.
+
+Create an isolated environment and install the declared dependencies:
+
+~~~bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+~~~
+
+The numerical requirements intentionally require SciPy 1.11 or newer so it is
+compatible with NumPy 1.26 or newer.
+
+### CUDA notes
+
+PyTorch and XGBoost GPU support depend on the local CUDA driver and wheel/build.
+If the generic pip installation does not match the machine, install the
+appropriate PyTorch build first and then install the remaining requirements.
+
+The GPU runners normally use:
+
+~~~bash
+export CUDA_VISIBLE_DEVICES=1
+export PYTHONUNBUFFERED=1
+export MPLCONFIGDIR=/tmp/matplotlib-cache
+~~~
+
+For XGBoost 2 or newer, the active-learning runners use tree_method=hist with
+device=cuda. Use nvidia-smi and the run log to verify that a nominal GPU run is
+actually using a GPU.
+
+UMAP visualization uses umap-learn on CPU. visualize_embedding.py can also use
+RAPIDS cuML when it is installed separately in a compatible CUDA environment.
+
+## Data preparation
+
+The main commands expect these local files in the repository root:
+
+- bp_rp_lamost_normalized.h5
+- bp_rp_lamost_normalized_low_teff.h5
+
+They are intentionally not tracked by Git.
+
+To normalize a raw columnar HDF5 file:
+
+~~~bash
+python normalize_h5.py
+~~~
+
+To rebuild the low-temperature warm-start file, adjust paths in
+low_temp_training/extract_low_teff.py and run:
+
+~~~bash
+python low_temp_training/extract_low_teff.py
+~~~
+
+For the secondary fixed-dataset baselines:
+
+~~~bash
 cd random_training
-python generate_dataset.py --seed 42 --file-path ../bp_rp_lamost_normalized.h5 --feh-threshold -2.0 --train-frac 0.8 --mr-ratio 1
+python generate_dataset.py \
+  --seed 42 \
+  --file-path ../bp_rp_lamost_normalized.h5 \
+  --feh-threshold -2.0 \
+  --train-frac 0.8 \
+  --mr-ratio 1
 cd ..
-```
+~~~
 
-This generates `random_train_set.h5` and `random_test_set.h5` inside the `random_training` folder.
+## Active-learning CLI
 
-## Optional Fixed-Dataset Baselines
+All existing commands continue to use active_learning.py.
 
-These scripts are secondary baselines. The main experiment interface is `active_learning.py`.
+A small CPU-friendly smoke run is:
 
-```bash
-python linear_classifier.py --run-name default_run --data-split random --optimizer irls --lambda-MP 0.1 --weight-decay 0.0 --feh-threshold -2.0
-python3 linear_regression.py --run-name ridge_baseline --data-split random --optimizer exact --weight-decay 1.0 --low-feh-weight 0.3 --feh-threshold -2.0
-```
+~~~bash
+python active_learning.py \
+  --warm-start-max 5000 \
+  --pool-max 20000 \
+  --eval-size 5000 \
+  --strategy random \
+  --model logistic \
+  --reweighting none \
+  --total-queries 20 \
+  --eval-every 10 \
+  --n-snapshots 2 \
+  --n-trials 1 \
+  --out-dir /tmp/astro-al-smoke
+~~~
 
-`linear_classifier.py` supports `--optimizer adam|irls`; `linear_regression.py` supports `--optimizer adam|exact`, where `exact + --weight-decay` is ridge regression. `two_layers.py` remains an Adam-only neural baseline.
+A representative XGBoost run is:
 
-## Embedding Visualization
-
-Visualize high-dimensional BP/RP embeddings using UMAP, t-SNE, or PCA, colored by metallicity ([Fe/H]).
-
-```bash
-python visualize_embedding.py --method umap
-python visualize_embedding.py --method umap --threshold -2.0
-python visualize_embedding.py --method umap --threshold -2.0 --continuous
-python visualize_embedding.py --method umap --threshold -2.0 --eval_weights linear_0.1/linear_model_weights.csv
-```
-
-## Active Learning (Warm Start)
-
-Trains a classifier via active learning, starting from a biased initial set (e.g. low-$T_{\rm eff}$ stars) and iteratively querying the full population. The default final model is logistic regression; `--model ridge` uses regularized linear regression as a classifier; `--model xgboost` uses the boosted decision-tree family used by Yao et al. for Gaia XP metal-poor candidate selection.
-
-```bash
-CUDA_VISIBLE_DEVICES=1
-
+~~~bash
 python active_learning.py \
   --warm-start-file bp_rp_lamost_normalized_low_teff.h5 \
-  --full-data-file  bp_rp_lamost_normalized.h5 \
-  --feh-threshold   -2.0 \
-  --strategy        wasserstein_l2 \
-  --model           logistic \
-  --reweighting     voronoi_l2 \
-  --reweight-lambda 3000 \
-  --reweight-pool-size 100000 \
-  --total-queries   100 \
-  --eval-every      10 \
-  --lambda-MP       0.01 \
-  --wass-pool-size  50000 \
-  --C               10000.0 \
-  --eval-size       500000 \
-  --seed            42 \
-  --n-trials        16 \
-  --n-snapshots     10 \
-  --out-dir         al_wasserstein_l2_100_lambda_3000
-```
+  --full-data-file bp_rp_lamost_normalized.h5 \
+  --feh-threshold -2.0 \
+  --strategy kmedianpp \
+  --reweighting voronoi_l2 \
+  --reweight-lambda 100 \
+  --model xgboost \
+  --total-queries 150 \
+  --eval-every 15 \
+  --n-snapshots 10 \
+  --n-trials 5 \
+  --eval-source full_heldout \
+  --reweight-source full_non_eval \
+  --class-balance-mode none \
+  --train-weight-sum-mode fixed \
+  --train-weight-sum 10000 \
+  --include-zero-snapshot \
+  --out-dir my_experiment
+~~~
 
-Outputs (in `--out-dir`): `results.json`, `params.json`, `final_weights.csv` (linear weights for linear models or feature importances for tree models), PR curves, weight-distribution plots for reweighted runs, and multi-trial summaries such as `auc_trials.json`/`auc_trials.png` when `--n-trials > 1`.
+Use python active_learning.py --help for the complete option list.
 
-### Arguments
-
-| Argument | Default | Description |
-| :--- | :--- | :--- |
-| `--warm-start-file` | `bp_rp_lamost_normalized_low_teff.h5` | H5 file for the biased warm-start set. |
-| `--full-data-file` | `bp_rp_lamost_normalized.h5` | H5 file for the full population (pool + eval). |
-| `--feh-threshold` | `-2.0` | Fe/H cut: < threshold → MP (0), ≥ threshold → MR (1). |
-| `--strategy` | `uncertainty` | Query strategy: `random`, `purely_random`, `uncertainty`, `entropy`, `margin`, `wasserstein`, `wasserstein_l2`, `entropicOT`, `kmedianpp`, `moment_matching`. |
-| `--total-queries` | `3000` | Total points to query from the pool. |
-| `--eval-every` | `200` | Retrain and evaluate every k queries. |
-| `--model` | `logistic` | Final classifier: `logistic`, `ridge`, or `xgboost`. |
-| `--lambda-MP` | `1.0` | Desired total-weight ratio MP/MR. Per-sample weights auto-scale: $w_{MP} = \lambda \cdot n_{MR}/n_{MP}$. |
-| `--C` | `1.0` | Inverse L2 regularisation strength for the logistic regression classifier. Larger values mean weaker classifier regularization. |
-| `--ridge-alpha` | `1.0` | L2 regularization strength for `--model ridge`. Larger values mean stronger ridge regularization. |
-| `--xgb-n-estimators` | `400` | Number of boosted trees for `--model xgboost`. |
-| `--xgb-max-depth` | `6` | Maximum tree depth for `--model xgboost`. |
-| `--xgb-learning-rate` | `0.1` | XGBoost learning rate $\eta$. |
-| `--xgb-subsample` | `0.8` | Row subsample fraction for XGBoost. |
-| `--xgb-colsample-bytree` | `0.8` | Feature subsample fraction per tree for XGBoost. |
-| `--xgb-min-child-weight` | `1.0` | XGBoost minimum child weight. |
-| `--xgb-gamma` | `0.0` | XGBoost minimum loss reduction required for a split. |
-| `--xgb-reg-lambda` | `1.0` | XGBoost L2 regularization on leaf weights. |
-| `--xgb-tree-method` | `hist` | XGBoost tree construction method, e.g. `hist` or `gpu_hist`. |
-| `--xgb-n-jobs` | `-1` | Parallel workers for XGBoost. |
-| `--reweighting` | `none` | Covariate-shift correction: `none`=uniform weights, `hard`=hard Voronoi weights, `soft`=temperature softmin weights, `voronoi_l2`=L2-regularized Wasserstein/Voronoi final weights, `kl`=KL-regularized Wasserstein/Voronoi final weights, `moment_l2`=linear second-moment weights with L2 weight regularization. |
-| `--reweight-lambda` | `1.0` | Regularization strength for `voronoi_l2`, `kl`, and `moment_l2` reweighting. Larger values produce less concentrated final weights. |
-| `--voronoi-l2-max-iter` | `15` | Maximum LBFGS iterations for `voronoi_l2`/`kl` reweighting at each snapshot. |
-| `--temperature` | `1.0` | Temperature for `soft` reweighting. Smaller values approach hard Voronoi weights. |
-| `--soft-topk` | `0` | Top-K nearest labeled points for `soft` reweighting. `0` auto-calibrates per snapshot. |
-| `--reweight-pool-size` | `None` | Subsample pool to this size for `soft`, `voronoi_l2`, `kl`, and `moment_l2` reweighting. `None` uses the full pool. Hard reweighting is unaffected. |
-| `--eval-size` | `100000` | Size of random eval subsample drawn from the full population. |
-| `--warm-start-max` | `None` | Cap warm-start size (subsampled if exceeded). |
-| `--pool-max` | `None` | Cap full-population size (subsampled if exceeded). |
-| `--wass-pool-size` | `50000` | Subpool size for `wasserstein`, `wasserstein_l2`, and `entropicOT` query planning. |
-| `--wass-plan-size` | `eval_every` | Number of Wasserstein-greedy points to plan before rebuilding the random subpool. Set to `total_queries` to reproduce the old one-shot plan. |
-| `--eot-temperature` | `1.0` | Temperature for `entropicOT` query planning. Smaller values approach hard Wasserstein selection. |
-| `--moment-ridge` | `1.0` | Ridge regularization used inside the `moment_matching` query objective. |
-| `--moment-weight-iters` | `200` | Projected subgradient iterations for `--reweighting moment_l2`. |
-| `--n-trials` | `1` | Number of independent trials. Multi-trial runs save mean/std PR-AUC summaries. |
-| `--n-snapshots` | `3` | Number of evenly spaced PR-AUC snapshot points. |
-| `--seed` | `42` | Random seed. |
-| `--out-dir` | `al_{strategy}` | Output directory. |
-
-### Query Strategies
+## Query strategies
 
 | Strategy | Description |
-| :--- | :--- |
-| `random` | Uniform random sampling (baseline). |
-| `purely_random` | Uniform random sampling without the biased warm-start set. |
-| `uncertainty` | Sample points near predicted probability 0.5. |
-| `entropy` | Sample points by predictive entropy. |
-| `margin` | Pick points with smallest \|decision function\| (closest to boundary). |
-| `wasserstein` | Greedy core-set: maximise coverage of the full population. |
-| `wasserstein_l2` | Greedy core-set with a Voronoi-L2 mass penalty; only valid with `--reweighting voronoi_l2`. |
-| `entropicOT` | Entropic optimal-transport variant of Wasserstein-style coverage. |
-| `kmedianpp` | k-median++ style geometric coverage baseline. |
-| `moment_matching` | Greedy ridge linear-design selection that reduces target second-moment prediction discrepancy. |
+| --- | --- |
+| random | Uniform random query baseline. |
+| purely_random | Random querying without the biased warm-start set. |
+| uncertainty | Stochastic sampling weighted toward probability 0.5. |
+| entropy | Predictive-entropy sampling. |
+| margin | Smallest decision-function margin. |
+| wasserstein | Greedy geometric coverage on a random target/candidate subpool. |
+| wasserstein_l2 | Wasserstein coverage plus a captured-mass L2 surrogate. |
+| entropicOT | Temperature-controlled entropic transport variant. |
+| kmedianpp | k-median++ geometric coverage baseline. |
+| moment_matching | Ridge-design selection that reduces feature-moment mismatch. |
 
-### Reweighting Methods
+Wasserstein-family planning is approximate even before regularization because it
+operates on random subpools controlled by wass_pool_size and periodically
+rebuilds plans according to wass_plan_size.
+
+### Wasserstein-L2 interpretation
+
+The current Wasserstein-L2 query score is a pointwise greedy captured-mass
+surrogate. It combines the unregularized coverage improvement with an L2
+penalty based on the target mass captured by the new candidate.
+
+It does not re-solve the complete regularized support-weight objective for every
+candidate. The later Voronoi-L2 reweighting step does solve a fixed-support
+dual, but that does not make the preceding candidate ranking exact. Therefore,
+results should be described as Wasserstein-L2 surrogate greedy rather than
+exact regularized greedy.
+
+The CLI enforces that strategy=wasserstein_l2 is paired with
+reweighting=voronoi_l2 and a positive shared regularization value.
+
+## Reweighting methods
 
 | Method | Description |
-| :--- | :--- |
-| `none` | Train with class-ratio weights only. |
-| `hard` | Hard Voronoi assignment from target-pool points to labeled points. |
-| `soft` | Temperature-softened Voronoi assignment, optionally truncated to top-K neighbors. |
-| `voronoi_l2` | Wasserstein/Voronoi final weights with an L2 concentration penalty controlled by `--reweight-lambda`. |
-| `kl` | Wasserstein final weights with a KL/entropy-style concentration penalty controlled by `--reweight-lambda`. |
-| `moment_l2` | Linear-regression moment weights: minimize target second-moment mismatch plus an L2 weight-spreading penalty. |
+| --- | --- |
+| none | No covariate-shift correction; only final weight normalization/class handling is applied. |
+| hard | Hard nearest-neighbor Voronoi mass assignment. |
+| soft | Temperature-softened Voronoi mass assignment. |
+| voronoi_l2 | Wasserstein/Voronoi weights with an L2 concentration penalty. |
+| kl | Wasserstein/Voronoi weights with KL-style regularization. |
+| moment_l2 | Feature second-moment matching with L2 weight spreading. |
 
-## Comparing AUC across Experiments
+The raw reweighting distribution and the final training weights are distinct.
+After reweighting, the training layer can optionally enforce an MP/MR total
+weight ratio and always normalizes to the selected training-weight total.
 
-`compare_auc_trials.py` reads the `auc_trials.json` files produced by `active_learning.py` (the raw data behind each `auc_trials.png`) and overlays the PR-AUC learning curves from multiple experiments on one figure. Each curve shows the **mean ± 1σ** band across all trials.
+## Evaluation and reproducibility
 
-```bash
-# Auto-discover all experiment subdirectories that contain auc_trials.json
-python compare_auc_trials.py --base-dir experiment_results_100/ --cmap-runs viridis
+Two evaluation modes exist:
 
+- pool: legacy behavior; evaluation rows are sampled from the query pool and
+  remain eligible for querying.
+- full_heldout: evaluation rows are sampled first and removed from both the
+  warm-start training set and the query pool using source_id.
 
-# Compare a specific subset, with custom legend labels and output file
+Use full_heldout for new matched comparisons.
+
+For each trial the runner records the exact queried pool indices, source IDs,
+labels, and batches. k-median++ uses a dedicated query RNG stream so
+reweighting/training draws do not change its query plan.
+
+## Output schema
+
+A multi-trial run normally writes:
+
+| Artifact | Contents |
+| --- | --- |
+| params.json | Schema-v2 inputs, derived data/split statistics, Git/environment metadata, hashes, status, and timings. |
+| results.json | Detailed evaluation snapshots for the first trial. |
+| auc_trials.json | PR-AUC, average precision, queried MP counts, losses, and weight statistics for all trials. |
+| query_plan_trials.json | Exact query plan for every trial. |
+| weight_stats_trials.json | Weight L2 norm, ESS, top-mass, and related concentration statistics. |
+| final_weights.csv | Linear coefficients or XGBoost feature importances. |
+| figures/generated/auc_trials.png | Mean and one-standard-deviation PR-AUC curves. |
+| figures/generated/average_precision_trials.png | Mean and one-standard-deviation AP curves. |
+| figures/generated/pr_curve_mp.png | MP precision-recall curves from first-trial snapshots. |
+| figures/generated/test_loss_*_trials.png | Per-class test-loss trajectories. |
+| figures/generated/weight_*_trials.png | Weight concentration and ESS trajectories. |
+
+Do not infer a run configuration from its folder name alone. Read params.json
+before combining or comparing results.
+
+### Params schema and run status
+
+New active-learning and full-data runs write exactly one metadata/configuration
+file, `params.json`. It groups data, split, query, reweighting, training, trial,
+environment, and timing information. The run section contains:
+
+- `status`: `running`, `completed`, or `failed`
+- `config_hash`: hash of all scientific inputs
+- `protocol_id`: hash of settings that must match across a comparison family
+- Git commit/branch/dirty state and the original command line
+
+The file is written atomically after data preparation and updated when the run
+finishes. A process killed without a Python exception remains marked `running`,
+which is intentionally distinguishable from a completed experiment.
+
+Historical active-learning files remain flat schema v1. They have only been
+annotated with the verified label convention, artifact-layout version, and old
+path; unavailable historical environment or Git facts were not invented.
+
+### Git policy for results
+
+The complete local result tree is retained, but Git uses a narrow allowlist.
+Compact JSON/CSV records, archived launchers and README files, and curated
+family plots under `figures/final/` are shareable. Per-run plots under
+`figures/generated/`, logs, top-candidate tables, checkpoints, and large raw
+arrays remain local. Use `git check-ignore -v PATH` when adding a new artifact
+type.
+
+## Experiment families
+
+### Full-dataset model benchmark
+
+`results/full_data/natural_seed42` compares Logistic regression with shallow,
+medium, and deeper XGBoost configurations on a natural stratified split.
+
+The recorded eval PR-AUC values are approximately:
+
+| Model | Eval PR-AUC |
+| --- | ---: |
+| Logistic | 0.0594 |
+| XGBoost shallow | 0.5398 |
+| XGBoost medium | 0.5925 |
+| XGBoost deeper | 0.6467 |
+
+The deeper configuration (700 trees, depth 6, learning rate 0.03) became the
+default model family for the later active-learning runners.
+
+### Legacy 1 percent MP-weight families
+
+These include `results/active_learning/0.01MP-weight`,
+`results/active_learning/Jul23-kmedpp-lambda`,
+`results/active_learning/Jul24-wass-lambda`, and the earlier 100/150/200-query
+XGBoost families.
+
+They generally use lambda_MP=0.01 and legacy pool evaluation. They remain useful
+historical baselines but should not be mixed with later full-heldout runs.
+
+### Full-heldout and no-class-balance families
+
+The later experiments progressively introduced:
+
+- lambda_MP=1
+- full-heldout evaluation
+- explicit training-weight-sum semantics
+- class_balance_mode=none
+- full_non_eval as the reweighting target
+- the zero-query warm-start snapshot
+
+The canonical matched comparison root is:
+
+`results/active_learning/xgb_wasserstein_l2_noclassbalance_fixed10k_fullheldout_reweightfull_150q_5seeds_eval15`
+
+It uses 150 queries, evaluation every 15 queries, five trials, fixed total
+training weight 10,000, no forced class balancing, and a 100,000-row reweighting
+subsample from the full non-evaluation population.
+
+Final mean average precision at 150 queries:
+
+| Run | Mean AP |
+| --- | ---: |
+| kmedian++ + Voronoi-L2, lambda=100 | 0.2968 |
+| Wasserstein-L2, lambda=100 | 0.2823 |
+| Wasserstein-L2, lambda=1000 | 0.2811 |
+| Wasserstein-L2, lambda=10000 | 0.2800 |
+| Wasserstein-L2, lambda=10 | 0.2561 |
+| random + no reweight | 0.2486 |
+| Wasserstein query + no reweight | 0.2464 |
+| hard Wasserstein | 0.2233 |
+
+Within this matched protocol, k-median++ plus Voronoi-L2 at lambda=100 is the
+strongest tested method. Query-only Wasserstein does not outperform random
+sampling, and hard Voronoi reweighting performs poorly because its weights are
+extremely concentrated.
+
+## Batch runners
+
+Important current runners include:
+
+- run_xgboost_kmedianpp_l2_lambda_sweep_noclassbalance_fixed10k.sh
+- run_xgboost_wasserstein_l2_noclassbalance_reweightfull_eval15.sh
+- run_xgboost_noclassbalance_matched_baselines.sh
+- run_xgboost_wasserstein_lambda0_eval10.sh
+- run_xgboost_voronoi_l2_sampling_200q_10seeds.sh
+- run_xgboost_full_eval.py
+
+Runners default to `results/active_learning/` and accept a `RESULTS_ROOT`
+environment override. Most refuse to overwrite completed outputs or skip
+already populated subdirectories. Always inspect the selected result root,
+`params.json`, and log before relaunching.
+
+## Comparing completed runs
+
+Average precision:
+
+~~~bash
 python compare_auc_trials.py \
-  al_random_100 al_uncertainty_100 al_kmedianpp_100 al_wasserstein_hard_100 \
-  --labels "Random" "Uncertainty" "K-Median++" "Wasserstein (hard)" \
-  --out comparison_100.png
+  results/active_learning/family/run_a \
+  results/active_learning/family/run_b \
+  results/active_learning/family/run_c \
+  --metric average_precision \
+  --labels A B C \
+  --out comparison_average_precision.png
+~~~
 
-# Also overlay the individual trial lines (lighter, thinner)
+Trapezoidal PR-AUC:
+
+~~~bash
 python compare_auc_trials.py \
-  al_random_100 al_uncertainty_100 \
-  --labels "Random" "Uncertainty" \
-  --show-trials \
-  --out comparison_with_trials.png
+  results/active_learning/family/run_a \
+  results/active_learning/family/run_b \
+  results/active_learning/family/run_c \
+  --metric pr_auc \
+  --labels A B C \
+  --out comparison_pr_auc.png
+~~~
 
-# Custom figure size and title
-python compare_auc_trials.py \
-  al_random_100 al_uncertainty_100 al_kmedianpp_100 \
-  --figsize 14 7 \
-  --title "100-Query Active Learning: PR-AUC Comparison" \
-  --out comparison_100_wide.png
-```
+Weight concentration:
 
-### Arguments
+~~~bash
+python compare_weight_l2_trials.py \
+  results/active_learning/family/run_a \
+  results/active_learning/family/run_b \
+  results/active_learning/family/run_c \
+  --metric effective_sample_size \
+  --labels A B C \
+  --out comparison_ess.png
+~~~
 
-| Argument | Default | Description |
-| :--- | :--- | :--- |
-| `dirs` | *(auto)* | Positional list of experiment directories. Auto-discovers all subdirs with `auc_trials.json` if omitted. |
-| `--labels` / `-l` | *(from dir name)* | Legend labels (must match the number of directories). |
-| `--out` / `-o` | `auc_comparison.png` | Output image path. |
-| `--show-trials` | off | Overlay individual trial lines on top of the mean curve. |
-| `--figsize W H` | `12 7` | Figure width and height in inches. |
-| `--title` | *(default string)* | Plot title. |
-| `--base-dir` | `.` | Root directory for auto-discovery mode. |
-| `--cmap-runs` | `coolwarm` | Continuous Matplotlib colormap for parameter sweeps. Use `none` for the discrete palette. |
+Only combine runs whose params.json files agree on the data split, evaluation
+source, reweighting source, class-balance behavior, training-weight total,
+query budget, evaluation schedule, model hyperparameters, and trial count.
 
-## Experiment Conclusions: 100 Queries (`experiment_results_100`)
+## Known limitations
 
-The `experiment_results_100` directory contains the results of an active learning evaluation where a logistic regression model is initialized on a heavily biased sample (low-temperature stars only) and updated using a very small budget of 100 newly queried stars from the full population.
-
-In this "biased initial sample + few queries" regime, the **Wasserstein hard** strategy (core-set Wasserstein querying combined with hard Voronoi reweighting) emerges as the top-performing method. It effectively corrects the covariate shift of the initial biased sample while efficiently querying the most informative points to construct a representative target distribution. We strongly recommend `Wasserstein hard` as the primary active learning strategy for scenarios with severe initial bias and extremely limited query budgets.
+- Wasserstein-L2 querying is a captured-mass surrogate, not an exact
+  candidate-wise solution of the full regularized objective.
+- Voronoi-L2 optimization uses a bounded L-BFGS iteration budget; convergence
+  should be checked when optimizer accuracy matters.
+- Historical schema-v1 params files predate environment, Git-state, and hash
+  metadata; only facts recoverable from the artifacts are annotated.
+- The preserved full-dataset baseline was originally trained with MP = 1 even
+  though all current code uses MP = 0. Its params file records this explicitly.
+- Generated figures are intentionally local; retain the JSON/CSV inputs needed
+  to reconstruct any plot selected for publication.

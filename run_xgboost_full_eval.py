@@ -14,6 +14,7 @@ import os
 import re
 import time
 from pathlib import Path
+import sys
 
 import h5py
 import numpy as np
@@ -33,6 +34,27 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
     roc_curve,
+)
+
+from al_data import (
+    CANONICAL_LABEL_ENCODING,
+    MP_LABEL,
+    MR_LABEL,
+    labels_from_feh,
+    mp_probability,
+    mp_target,
+)
+from al_metadata import (
+    ARTIFACT_LAYOUT_VERSION,
+    SCHEMA_VERSION,
+    atomic_write_json,
+    canonical_hash,
+    environment_metadata,
+    experiment_family,
+    fast_hdf5_fingerprint,
+    git_metadata,
+    update_params_status,
+    utc_now,
 )
 
 
@@ -70,6 +92,7 @@ XGB_CONFIGS = {
 }
 
 PRECISION_KS = (100, 300, 1000, 3000, 10000)
+_ACTIVE_OUT_DIR = None
 
 
 def nsort(s):
@@ -107,7 +130,7 @@ def load_dataset(path, feh_threshold):
     norms = np.linalg.norm(X[:, :end], axis=1, keepdims=True) + 1e-8
     X[:, :end] /= norms
 
-    y = (feh < feh_threshold).astype(np.int32)  # MP is the positive class.
+    y = labels_from_feh(feh, feh_threshold)
     elapsed = time.perf_counter() - t0
     return X, y, feh, source_id, cols, elapsed
 
@@ -135,8 +158,8 @@ def stratified_split(y, seed, train_frac=0.70, val_frac=0.10):
 
 def split_counts(y, indices):
     yy = y[indices]
-    n_mp = int((yy == 1).sum())
-    n_mr = int((yy == 0).sum())
+    n_mp = int((yy == MP_LABEL).sum())
+    n_mr = int((yy == MR_LABEL).sum())
     return {
         "total": int(len(indices)),
         "mp": n_mp,
@@ -149,7 +172,7 @@ def balanced_sample_weight(y):
     y = np.asarray(y, dtype=np.int32)
     weights = np.ones(len(y), dtype=np.float32)
     n = float(len(y))
-    for cls in (0, 1):
+    for cls in (MP_LABEL, MR_LABEL):
         mask = y == cls
         count = int(mask.sum())
         if count > 0:
@@ -180,7 +203,7 @@ def import_xgboost():
 def smoke_test_xgboost(XGBClassifier, requested_tree_method, seed):
     rng = np.random.RandomState(seed)
     X = rng.normal(size=(512, 8)).astype(np.float32)
-    y = (rng.rand(512) < 0.08).astype(np.int32)
+    y = np.where(rng.rand(512) < 0.08, MP_LABEL, MR_LABEL).astype(np.int32)
     weights = balanced_sample_weight(y)
 
     attempts = [requested_tree_method]
@@ -215,30 +238,38 @@ def smoke_test_xgboost(XGBClassifier, requested_tree_method, seed):
 
 
 def model_metrics(y_true, p_mp):
-    y_pred = (p_mp >= 0.5).astype(np.int32)
-    cm = confusion_matrix(y_true, y_pred, labels=[1, 0])
+    y_true_mp = mp_target(y_true)
+    y_pred_mp = (p_mp >= 0.5).astype(np.int32)
+    cm = confusion_matrix(y_true_mp, y_pred_mp, labels=[1, 0])
     return {
-        "pr_auc": float(average_precision_score(y_true, p_mp)),
-        "roc_auc": float(roc_auc_score(y_true, p_mp)),
-        "log_loss": float(log_loss(y_true, np.column_stack([1.0 - p_mp, p_mp]), labels=[0, 1])),
-        "precision_at_0_5": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall_at_0_5": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1_at_0_5": float(f1_score(y_true, y_pred, zero_division=0)),
+        "pr_auc": float(average_precision_score(y_true_mp, p_mp)),
+        "roc_auc": float(roc_auc_score(y_true_mp, p_mp)),
+        "log_loss": float(log_loss(
+            y_true_mp, np.column_stack([1.0 - p_mp, p_mp]), labels=[0, 1]
+        )),
+        "precision_at_0_5": float(precision_score(
+            y_true_mp, y_pred_mp, zero_division=0
+        )),
+        "recall_at_0_5": float(recall_score(
+            y_true_mp, y_pred_mp, zero_division=0
+        )),
+        "f1_at_0_5": float(f1_score(y_true_mp, y_pred_mp, zero_division=0)),
         "confusion_matrix_labels_mp_mr": cm.tolist(),
         "n": int(len(y_true)),
-        "n_mp": int((y_true == 1).sum()),
-        "predicted_mp_at_0_5": int(y_pred.sum()),
+        "n_mp": int(y_true_mp.sum()),
+        "predicted_mp_at_0_5": int(y_pred_mp.sum()),
     }
 
 
 def precision_at_k_rows(model_name, y_true, p_mp, ks=PRECISION_KS):
     order = np.argsort(-p_mp)
-    total_mp = int((y_true == 1).sum())
+    y_true_mp = mp_target(y_true)
+    total_mp = int(y_true_mp.sum())
     rows = []
     for k in ks:
         kk = min(int(k), len(order))
         top = order[:kk]
-        tp = int((y_true[top] == 1).sum())
+        tp = int(y_true_mp[top].sum())
         rows.append({
             "model": model_name,
             "k": kk,
@@ -255,7 +286,9 @@ def save_top_candidates(out_dir, model_name, y_true, p_mp, feh, source_id, max_k
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["rank", "source_id", "feh", "true_label_mp", "p_mp"],
+            fieldnames=[
+                "rank", "source_id", "feh", "true_class_label", "is_mp", "p_mp"
+            ],
         )
         writer.writeheader()
         for rank, idx in enumerate(order, start=1):
@@ -263,7 +296,8 @@ def save_top_candidates(out_dir, model_name, y_true, p_mp, feh, source_id, max_k
                 "rank": rank,
                 "source_id": int(source_id[idx]),
                 "feh": float(feh[idx]),
-                "true_label_mp": int(y_true[idx]),
+                "true_class_label": int(y_true[idx]),
+                "is_mp": int(y_true[idx] == MP_LABEL),
                 "p_mp": float(p_mp[idx]),
             })
 
@@ -278,9 +312,13 @@ def write_csv(path, rows):
 
 
 def plot_curves(out_dir, curve_data):
+    figure_dir = out_dir / "figures" / "final"
+    figure_dir.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(9, 6))
     for item in curve_data:
-        precision, recall, _ = precision_recall_curve(item["y_true"], item["p_mp"])
+        precision, recall, _ = precision_recall_curve(
+            mp_target(item["y_true"]), item["p_mp"]
+        )
         ax.plot(recall, precision, lw=2, label=f"{item['name']} (AP={item['eval_pr_auc']:.4f})")
     ax.set_xlabel("Recall (MP)")
     ax.set_ylabel("Precision (MP)")
@@ -288,12 +326,12 @@ def plot_curves(out_dir, curve_data):
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=9)
     fig.tight_layout()
-    fig.savefig(out_dir / "pr_curves.png", dpi=200)
+    fig.savefig(figure_dir / "pr_curves.png", dpi=200)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(9, 6))
     for item in curve_data:
-        fpr, tpr, _ = roc_curve(item["y_true"], item["p_mp"])
+        fpr, tpr, _ = roc_curve(mp_target(item["y_true"]), item["p_mp"])
         ax.plot(fpr, tpr, lw=2, label=f"{item['name']} (AUC={item['eval_roc_auc']:.4f})")
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
@@ -301,7 +339,7 @@ def plot_curves(out_dir, curve_data):
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=9)
     fig.tight_layout()
-    fig.savefig(out_dir / "roc_curves.png", dpi=200)
+    fig.savefig(figure_dir / "roc_curves.png", dpi=200)
     plt.close(fig)
 
 
@@ -319,8 +357,8 @@ def train_logistic(args, X_train, y_train, X_val, X_eval):
     return {
         "model": clf,
         "train_seconds": train_seconds,
-        "p_val": clf.predict_proba(X_val)[:, 1],
-        "p_eval": clf.predict_proba(X_eval)[:, 1],
+        "p_val": mp_probability(clf, X_val),
+        "p_eval": mp_probability(clf, X_eval),
         "params": {
             "C": args.logistic_c,
             "solver": args.logistic_solver,
@@ -352,8 +390,8 @@ def train_xgb(args, XGBClassifier, name, config, tree_method, X_train, y_train, 
     return {
         "model": model,
         "train_seconds": train_seconds,
-        "p_val": model.predict_proba(X_val)[:, 1],
-        "p_eval": model.predict_proba(X_eval)[:, 1],
+        "p_val": mp_probability(model, X_val),
+        "p_eval": mp_probability(model, X_eval),
         "params": params,
     }
 
@@ -361,7 +399,7 @@ def train_xgb(args, XGBClassifier, name, config, tree_method, X_train, y_train, 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-file", default="bp_rp_lamost_normalized.h5")
-    parser.add_argument("--out-dir", default="xgboost_full_eval/natural_seed42")
+    parser.add_argument("--out-dir", default="results/full_data/natural_seed42")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--feh-threshold", type=float, default=-2.0)
     parser.add_argument("--train-frac", type=float, default=0.70)
@@ -385,9 +423,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+def _run_main():
+    global _ACTIVE_OUT_DIR
+    total_t0 = time.perf_counter()
     args = parse_args()
     out_dir = Path(args.out_dir)
+    _ACTIVE_OUT_DIR = out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     xgb, XGBClassifier = import_xgboost()
@@ -415,23 +456,31 @@ def main():
     feh_eval = feh[eval_idx]
     source_eval = source_id[eval_idx]
 
-    params = {
-        "data_file": args.data_file,
-        "out_dir": str(out_dir),
-        "seed": args.seed,
-        "feh_threshold": args.feh_threshold,
+    data_metadata = {
+        "full_population": fast_hdf5_fingerprint(args.data_file),
         "feature_count": len(cols),
         "feature_columns": cols,
-        "xgboost_version": xgb.__version__,
-        "requested_tree_method": args.tree_method,
-        "actual_tree_method": actual_tree_method,
-        "smoke_test_errors": smoke_errors,
-        "splits": {
+        "feh_threshold": args.feh_threshold,
+        "label_encoding": dict(CANONICAL_LABEL_ENCODING),
+    }
+    split_metadata = {
+        "train_fraction": args.train_frac,
+        "validation_fraction": args.val_frac,
+        "actual": {
             "train": split_counts(y, train_idx),
             "validation": split_counts(y, val_idx),
             "eval": split_counts(y, eval_idx),
         },
+    }
+    training_metadata = {
+        "requested_tree_method": args.tree_method,
+        "actual_tree_method": actual_tree_method,
+        "xgboost_version": xgb.__version__,
+        "xgb_n_jobs": args.n_jobs,
+        "xgb_verbose": args.xgb_verbose,
         "xgb_configs": {name: XGB_CONFIGS[name] for name in args.configs},
+        "smoke_test_errors": smoke_errors,
+        "top_k": args.top_k,
         "logistic": {
             "enabled": not args.skip_logistic,
             "C": args.logistic_c,
@@ -440,8 +489,60 @@ def main():
             "tol": args.logistic_tol,
         },
     }
-    with (out_dir / "params.json").open("w") as f:
-        json.dump(params, f, indent=2)
+    scientific_config = {
+        "data": {
+            "fingerprint": data_metadata["full_population"]["fingerprint"],
+            "feh_threshold": args.feh_threshold,
+            "label_encoding": dict(CANONICAL_LABEL_ENCODING),
+        },
+        "split": {
+            "train_fraction": args.train_frac,
+            "validation_fraction": args.val_frac,
+            "seed": args.seed,
+        },
+        "training": {
+            key: value
+            for key, value in training_metadata.items()
+            if key not in {"actual_tree_method", "smoke_test_errors", "xgboost_version"}
+        },
+    }
+    created_at = utc_now()
+    config_hash = canonical_hash(scientific_config)
+    params = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_layout_version": ARTIFACT_LAYOUT_VERSION,
+        "experiment_type": "full_data_benchmark",
+        "run": {
+            "run_id": created_at.replace(":", "").replace("+00:00", "Z")
+            + "-" + config_hash.split(":", 1)[1][:8],
+            "experiment_family": experiment_family(out_dir, "full_data_benchmark"),
+            "output_dir": str(out_dir),
+            "argv": list(sys.argv),
+            "status": "running",
+            "created_at_utc": created_at,
+            "completed_at_utc": None,
+            "git": git_metadata(),
+            "config_hash": config_hash,
+            "protocol_id": canonical_hash({
+                "data": scientific_config["data"],
+                "split": scientific_config["split"],
+                "training_family": "balanced_full_data_model_selection",
+            }),
+        },
+        "data": data_metadata,
+        "split": split_metadata,
+        "query": None,
+        "reweighting": None,
+        "training": training_metadata,
+        "trials": {"seed": args.seed},
+        "environment": environment_metadata(),
+        "timing": {
+            "data_load_seconds": float(load_seconds),
+            "total_seconds": None,
+        },
+        "failure": None,
+    }
+    atomic_write_json(out_dir / "params.json", params)
 
     results = {}
     comparison_rows = []
@@ -527,8 +628,21 @@ def main():
     best_xgb = max(xgb_names, key=lambda n: results[n]["validation"]["pr_auc"])
     write_outputs()
 
+    update_params_status(
+        out_dir, "completed", total_seconds=time.perf_counter() - total_t0
+    )
+
     print(f"[Done] best_xgboost_by_validation_pr_auc={best_xgb}")
     print(f"[Done] outputs saved to {out_dir}")
+
+
+def main():
+    try:
+        return _run_main()
+    except Exception as exc:
+        if _ACTIVE_OUT_DIR is not None:
+            update_params_status(_ACTIVE_OUT_DIR, "failed", error=exc)
+        raise
 
 
 if __name__ == "__main__":

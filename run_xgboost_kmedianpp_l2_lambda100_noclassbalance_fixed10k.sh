@@ -41,7 +41,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgb_kmedianpp_noclassbalance_fixed10k_fullheldout_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgb_kmedianpp_noclassbalance_fixed10k_fullheldout_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 OUT_DIR="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDA}"
 UNIFORM_OUT_DIR="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_inf"
 
@@ -114,7 +116,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_1000" \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_10000" \
   "$UNIFORM_OUT_DIR" \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_noclassbalance_fixed10k_ap_lambda1e2_1e3_1e4_inf.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_noclassbalance_fixed10k_ap_lambda1e2_1e3_1e4_inf.png" \
   --metric average_precision \
   --labels "lambda=1e2" "lambda=1e3" "lambda=1e4" "lambda=inf (uniform)" \
   --cmap-runs viridis

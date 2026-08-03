@@ -30,7 +30,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgboost_voronoi_l2_sampling_${TOTAL_QUERIES}q_10seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgboost_voronoi_l2_sampling_${TOTAL_QUERIES}q_10seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 OUT_DIR="${RESULT_ROOT}/al_xgb_random_none_${TOTAL_QUERIES}"
 
 echo ""
@@ -79,7 +81,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_random_l2_${TOTAL_QUERIES}" \
   "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}" \
   "${RESULT_ROOT}/al_xgb_random_none_${TOTAL_QUERIES}" \
-  --out "${RESULT_ROOT}/xgb_voronoi_l2_sampling_${TOTAL_QUERIES}q_with_random_no_reweight_auc.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_voronoi_l2_sampling_${TOTAL_QUERIES}q_with_random_no_reweight_auc.png" \
   --labels "XGB kmedian++ + Voronoi-L2" "XGB random + Voronoi-L2" "XGB Wasserstein-L2 + Voronoi-L2" "XGB random + no reweighting" \
   --cmap-runs none
 

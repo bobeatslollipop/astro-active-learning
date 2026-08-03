@@ -204,7 +204,8 @@ def main():
     p_add('--no-tf32', action='store_true', help="Disable TF32 for Ampere+ GPUs.")
     p_add('--compile', action='store_true', help="Use torch.compile().")
 
-    p_add('--run-name', type=str, default=None, help="Name of the run. Outputs will be saved to linear_reg_{run_name}/.")
+    p_add('--run-name', type=str, default=None,
+          help="Name of the run. Outputs are saved below results/baselines/.")
     p_add('--seed', type=int, default=42, help="Random seed for reproducibility.")
     p_add('--data-split', type=str, default='random', choices=['random', 'low_temp'], help="Which dataset split to use. Defaults to 'random'.")
     p_add('--train-file', type=str, default=None, help="Path to train H5 file. Overrides --data-split.")
@@ -221,11 +222,9 @@ def main():
 
     args = parser.parse_args()
 
-    if args.run_name:
-        out_dir = f"linear_reg_{args.run_name}"
-        os.makedirs(out_dir, exist_ok=True)
-    else:
-        out_dir = "."
+    run_name = args.run_name or "default"
+    out_dir = os.path.join("results", "baselines", f"linear_reg_{run_name}")
+    os.makedirs(out_dir, exist_ok=True)
 
     # --- Hardware Search / List ---
     if args.list_hardware:

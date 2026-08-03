@@ -35,7 +35,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgb_kmedianpp_noclassbalance_fixed10k_fullheldout_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgb_kmedianpp_noclassbalance_fixed10k_fullheldout_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 HARD_OUT_DIR="${RESULT_ROOT}/al_xgb_kmedianpp_hard_${TOTAL_QUERIES}_lambda_0"
 
 DIR_L100="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_100"
@@ -107,14 +109,14 @@ echo "============================================================"
 
 python compare_auc_trials.py \
   "$HARD_OUT_DIR" "$DIR_L100" "$DIR_L1K" "$DIR_L10K" "$DIR_L100K" "$DIR_L1M" "$DIR_INF" \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_noclassbalance_fixed10k_average_precision_with_hard.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_noclassbalance_fixed10k_average_precision_with_hard.png" \
   --metric average_precision \
   --labels "lambda=0 hard" "lambda=1e2" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=1e6" "lambda=inf (uniform)" \
   --cmap-runs viridis
 
 python compare_auc_trials.py \
   "$HARD_OUT_DIR" "$DIR_L100" "$DIR_L1K" "$DIR_L10K" "$DIR_L100K" "$DIR_L1M" "$DIR_INF" \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_noclassbalance_fixed10k_pr_auc_trapz_with_hard.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_noclassbalance_fixed10k_pr_auc_trapz_with_hard.png" \
   --metric pr_auc \
   --labels "lambda=0 hard" "lambda=1e2" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=1e6" "lambda=inf (uniform)" \
   --cmap-runs viridis
@@ -122,13 +124,13 @@ python compare_auc_trials.py \
 python compare_weight_l2_trials.py \
   "$HARD_OUT_DIR" "$DIR_L100" "$DIR_L1K" "$DIR_L10K" "$DIR_L100K" "$DIR_L1M" "$DIR_INF" \
   --metric objective_l2_norm \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_noclassbalance_fixed10k_weight_l2_norm_with_hard.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_noclassbalance_fixed10k_weight_l2_norm_with_hard.png" \
   --labels "lambda=0 hard" "lambda=1e2" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=1e6" "lambda=inf (uniform)"
 
 python compare_weight_l2_trials.py \
   "$HARD_OUT_DIR" "$DIR_L100" "$DIR_L1K" "$DIR_L10K" "$DIR_L100K" "$DIR_L1M" "$DIR_INF" \
   --metric effective_sample_size \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_noclassbalance_fixed10k_effective_sample_size_with_hard.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_noclassbalance_fixed10k_effective_sample_size_with_hard.png" \
   --labels "lambda=0 hard" "lambda=1e2" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=1e6" "lambda=inf (uniform)"
 
 echo ""

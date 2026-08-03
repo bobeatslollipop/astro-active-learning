@@ -3,6 +3,8 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES=1
 
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+
 # ── Shared hyperparameters (same as run_experiments.sh) ──
 WARM_START=bp_rp_lamost_normalized_low_teff.h5
 FULL_DATA=bp_rp_lamost_normalized.h5
@@ -23,7 +25,7 @@ REWEIGHT_POOL=100000
 LAMBDAS=(300 1000 3000 10000 30000)
 
 for lambda in "${LAMBDAS[@]}"; do
-  out_dir="truelygreedy_l2_sweep/al_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"
+  out_dir="${RESULTS_ROOT}/truelygreedy_l2_sweep/al_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"
   echo ""
   echo "============================================================"
   echo "  Strategy: wasserstein_l2  |  Reweighting: voronoi_l2"

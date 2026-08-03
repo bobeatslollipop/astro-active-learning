@@ -3,6 +3,8 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES=1
 
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+
 # ── Shared hyperparameters (edit once, applies to all experiments) ──
 WARM_START=bp_rp_lamost_normalized_low_teff.h5
 FULL_DATA=bp_rp_lamost_normalized.h5
@@ -22,9 +24,9 @@ REWEIGHT_LAMBDA=1000.0
 
 # ── Experiments: "strategy  reweighting  out_dir" ──
 EXPERIMENTS=(
-  # "wasserstein   voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_wasserstein_voronoi_l2_${TOTAL_QUERIES}"
-  "kmedianpp     voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_kmedianpp_l2_${TOTAL_QUERIES}"
-  "random        voronoi_l2    experiment_results_${TOTAL_QUERIES}/al_random_l2_${TOTAL_QUERIES}"
+  # "wasserstein   voronoi_l2    ${RESULTS_ROOT}/experiment_results_${TOTAL_QUERIES}/al_wasserstein_voronoi_l2_${TOTAL_QUERIES}"
+  "kmedianpp     voronoi_l2    ${RESULTS_ROOT}/experiment_results_${TOTAL_QUERIES}/al_kmedianpp_l2_${TOTAL_QUERIES}"
+  "random        voronoi_l2    ${RESULTS_ROOT}/experiment_results_${TOTAL_QUERIES}/al_random_l2_${TOTAL_QUERIES}"
 )
 
 # ── Run each experiment ──

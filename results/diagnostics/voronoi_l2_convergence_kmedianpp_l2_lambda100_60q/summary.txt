@@ -1,0 +1,37 @@
+Voronoi-L2 optimizer convergence diagnostic
+{
+  "seed": 42,
+  "trial": 0,
+  "diagnostic_queries": 60,
+  "snapshot_every": 15,
+  "reweight_lambda": 100.0,
+  "reweight_pool_size": 100000,
+  "production_initial_iter": 16,
+  "production_later_iter": 8,
+  "reference_extra_iter": 32,
+  "query_plan_source": "xgb_wasserstein_l2_noclassbalance_fixed10k_fullheldout_reweightfull_150q_5seeds_eval15/al_xgb_kmedianpp_l2_150_lambda_100/query_plan_trials.json",
+  "total_runtime_s": 567.4219996798784,
+  "data_counts": {
+    "warm_start_original": 450000,
+    "warm_start_train": 384396,
+    "warm_start_train_mp": 1347,
+    "pool": 4042878,
+    "pool_mp": 7375,
+    "eval": 500000,
+    "eval_mp": 971,
+    "eval_original_warm": 43666,
+    "eval_final_warm_overlap": 0,
+    "eval_query_pool_overlap": 0
+  },
+  "reweight_counts": {
+    "reweight_source_total": 4427274,
+    "reweight_pool_size": 100000,
+    "reweight_pool_warm_rows": 8639
+  }
+}
+
+q=0: prod_grad_inf=0.0288096, ref_grad_inf=0.0242947, objective_gap=0.013742, p_l1=0.365532, p_linf=0.00088085
+q=15: prod_grad_inf=0.0308881, ref_grad_inf=0.0438866, objective_gap=0.0107272, p_l1=0.348764, p_linf=0.000898384
+q=30: prod_grad_inf=0.0268659, ref_grad_inf=0.0186525, objective_gap=0.00959443, p_l1=0.358465, p_linf=0.000759875
+q=45: prod_grad_inf=0.0772085, ref_grad_inf=0.0390973, objective_gap=0.00753819, p_l1=0.336812, p_linf=0.00177872
+q=60: prod_grad_inf=0.0254642, ref_grad_inf=0.0222486, objective_gap=0.0068825, p_l1=0.358441, p_linf=0.000841262

@@ -3,6 +3,8 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES=1
 
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+
 # Shared hyperparameters for the linear moment-matching path.
 WARM_START=bp_rp_lamost_normalized_low_teff.h5
 FULL_DATA=bp_rp_lamost_normalized.h5
@@ -28,7 +30,7 @@ MODEL=ridge
 MOMENT_RIDGES=(1 10 100 1000 3000 10000)
 
 for moment_ridge in "${MOMENT_RIDGES[@]}"; do
-  out_dir="moment_l2_sweep_results/al_moment_matching_${MODEL}_${TOTAL_QUERIES}_ridge_${moment_ridge}"
+  out_dir="${RESULTS_ROOT}/moment_l2_sweep_results/al_moment_matching_${MODEL}_${TOTAL_QUERIES}_ridge_${moment_ridge}"
   echo ""
   echo "============================================================"
   echo "  Strategy: moment_matching  |  Model: ${MODEL}"

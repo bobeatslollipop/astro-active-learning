@@ -40,7 +40,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgb_kmedianpp_lambdaMP1_fullheldout_initialweightsum_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgb_kmedianpp_lambdaMP1_fullheldout_initialweightsum_${TOTAL_QUERIES}q_${N_TRIALS}seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 UNIFORM_OUT_DIR="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_inf"
 
 for lambda in "${LAMBDAS[@]}"; do
@@ -140,7 +142,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   "$UNIFORM_OUT_DIR" \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_average_precision.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_average_precision.png" \
   --metric average_precision \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)" \
   --cmap-runs viridis
@@ -151,7 +153,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   "$UNIFORM_OUT_DIR" \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_pr_auc_trapz.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_pr_auc_trapz.png" \
   --metric pr_auc \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)" \
   --cmap-runs viridis
@@ -168,7 +170,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   "$UNIFORM_OUT_DIR" \
   --metric objective_l2_norm \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_weight_l2_norm.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_weight_l2_norm.png" \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)"
 
 python compare_weight_l2_trials.py \
@@ -178,7 +180,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   "$UNIFORM_OUT_DIR" \
   --metric objective_l2_sq \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_weight_l2_sq.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_weight_l2_sq.png" \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)"
 
 python compare_weight_l2_trials.py \
@@ -188,7 +190,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   "$UNIFORM_OUT_DIR" \
   --metric effective_sample_size \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_effective_sample_size.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_effective_sample_size.png" \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)"
 
 echo ""

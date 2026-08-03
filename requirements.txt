@@ -1,0 +1,13 @@
+# Core numerical and data stack
+numpy>=1.26,<3
+scipy>=1.11,<2
+h5py>=3.9,<4
+
+# Models and evaluation
+scikit-learn>=1.3,<2
+xgboost>=2.0,<4
+torch>=2.1,<3
+
+# Plotting and embedding visualizations
+matplotlib>=3.7,<4
+umap-learn>=0.5,<1

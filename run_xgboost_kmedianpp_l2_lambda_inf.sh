@@ -33,7 +33,9 @@ XGB_TREE_METHOD=hist
 XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
-RESULT_ROOT="xgboost_kmedianpp_l2_lambda_sweep_${TOTAL_QUERIES}q_5seeds"
+RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
+RESULT_ROOT="${RESULTS_ROOT}/xgboost_kmedianpp_l2_lambda_sweep_${TOTAL_QUERIES}q_5seeds"
+mkdir -p "${RESULT_ROOT}/figures/final"
 OUT_DIR="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_inf"
 
 echo ""
@@ -84,7 +86,7 @@ python compare_auc_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_10000" \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_100000" \
   "$OUT_DIR" \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_auc_with_uniform.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_auc_with_uniform.png" \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)" \
   --cmap-runs viridis
 
@@ -100,7 +102,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_100000" \
   "$OUT_DIR" \
   --metric objective_l2_norm \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_weight_l2_norm_with_uniform.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_weight_l2_norm_with_uniform.png" \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)"
 
 python compare_weight_l2_trials.py \
@@ -110,7 +112,7 @@ python compare_weight_l2_trials.py \
   "${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_100000" \
   "$OUT_DIR" \
   --metric effective_sample_size \
-  --out "${RESULT_ROOT}/xgb_kmedianpp_l2_lambda_sweep_effective_sample_size_with_uniform.png" \
+  --out "${RESULT_ROOT}/figures/final/xgb_kmedianpp_l2_lambda_sweep_effective_sample_size_with_uniform.png" \
   --labels "lambda=100" "lambda=1e3" "lambda=1e4" "lambda=1e5" "lambda=inf (uniform)"
 
 echo ""
