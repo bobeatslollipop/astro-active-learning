@@ -267,13 +267,16 @@ def run_active_learning(args):
         with open(optimizer_log_path, "w", encoding="utf-8"):
             pass
         optimizer_trace_data = {
-            "schema_version": 1,
+            "schema_version": 2,
             "optimizer": "voronoi_l2_lbfgs",
             "dual_objective_convention": "minimize_negative_dual",
             "max_iter": int(args.voronoi_l2_max_iter),
-            "objective_tolerance": float(args.voronoi_l2_objective_tol),
-            "objective_patience": int(args.voronoi_l2_objective_patience),
-            "gradient_tolerance": 1e-5,
+            "relative_gap_tolerance": float(args.voronoi_l2_relative_gap_tol),
+            "gradient_tolerance": float(args.voronoi_l2_gradient_tol),
+            "stability_window": int(args.voronoi_l2_stability_window),
+            "dual_relative_tolerance": float(args.voronoi_l2_dual_relative_tol),
+            "weight_l1_tolerance": float(args.voronoi_l2_weight_l1_tol),
+            "stability_patience": int(args.voronoi_l2_stability_patience),
             "trials": [],
         }
         atomic_write_json(
@@ -446,17 +449,24 @@ def run_active_learning(args):
                 reweight_label = "Voronoi-L2 weights"
                 print(f"  [Voronoi-L2] Computing sample weights (λ={args.reweight_lambda}, "
                       f"max_iter={args.voronoi_l2_max_iter}, "
-                      f"objective_tol={args.voronoi_l2_objective_tol:g}, "
-                      f"patience={args.voronoi_l2_objective_patience}, "
+                      f"relative_gap_tol={args.voronoi_l2_relative_gap_tol:g}, "
+                      f"gradient_tol={args.voronoi_l2_gradient_tol:g}, "
+                      f"stability_window={args.voronoi_l2_stability_window}, "
+                      f"dual_relative_tol={args.voronoi_l2_dual_relative_tol:g}, "
+                      f"weight_l1_tol={args.voronoi_l2_weight_l1_tol:g}, "
+                      f"stability_patience={args.voronoi_l2_stability_patience}, "
                       f"{n_labeled} labeled vs {len(X_reweight_pool)} target rows"
                       f"{f' (subsampled from {reweight_source_full_n})' if len(X_reweight_pool) < reweight_source_full_n else ''})...")
                 solve_index = len(trial_optimizer_trace["solves"]) + 1
                 sw = compute_voronoi_l2_weights(X_reweight_pool, Xl, args.reweight_lambda,
                                                 state=voronoi_l2_state,
                                                 max_iter=args.voronoi_l2_max_iter,
-                                                objective_tol=args.voronoi_l2_objective_tol,
-                                                objective_patience=args.voronoi_l2_objective_patience,
-                                                gradient_tol=1e-5,
+                                                relative_gap_tol=args.voronoi_l2_relative_gap_tol,
+                                                gradient_tol=args.voronoi_l2_gradient_tol,
+                                                stability_window=args.voronoi_l2_stability_window,
+                                                dual_relative_tol=args.voronoi_l2_dual_relative_tol,
+                                                weight_l1_tol=args.voronoi_l2_weight_l1_tol,
+                                                stability_patience=args.voronoi_l2_stability_patience,
                                                 trace_context={
                                                     "trial_index": int(trial),
                                                     "trial": int(trial + 1),

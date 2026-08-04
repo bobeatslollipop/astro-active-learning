@@ -80,12 +80,20 @@ def main():
        help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, voronoi_l2/kl=regularized Wasserstein final weights, moment_l2=linear second-moment weights.")
     a("--reweight-lambda", type=float, default=1.0,
        help="Regularisation strength lambda for voronoi_l2, kl, or moment_l2 reweighting.")
-    a("--voronoi-l2-max-iter", type=int, default=128,
-       help="Maximum accepted L-BFGS updates for each voronoi_l2 reweighting solve.")
-    a("--voronoi-l2-objective-tol", type=float, default=1e-4,
-       help="Absolute dual-objective improvement threshold for voronoi_l2 convergence.")
-    a("--voronoi-l2-objective-patience", type=int, default=2,
-       help="Consecutive accepted updates below --voronoi-l2-objective-tol required for convergence.")
+    a("--voronoi-l2-max-iter", type=int, default=512,
+      help="Maximum accepted L-BFGS updates for each voronoi_l2 reweighting solve.")
+    a("--voronoi-l2-relative-gap-tol", type=float, default=1e-2,
+       help="Certified relative primal-dual gap tolerance for voronoi_l2 convergence.")
+    a("--voronoi-l2-gradient-tol", type=float, default=1e-4,
+       help="Certified gradient infinity-norm tolerance for voronoi_l2 convergence.")
+    a("--voronoi-l2-stability-window", type=int, default=10,
+       help="Accepted-update window used for non-certified voronoi_l2 stability checks.")
+    a("--voronoi-l2-dual-relative-tol", type=float, default=1e-4,
+       help="Maximum relative dual improvement across the stability window.")
+    a("--voronoi-l2-weight-l1-tol", type=float, default=5e-3,
+       help="Maximum normalized-weight L1 change across the stability window.")
+    a("--voronoi-l2-stability-patience", type=int, default=2,
+       help="Consecutive stable accepted updates required for stable_not_certified.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
@@ -134,10 +142,18 @@ def main():
         p.error("--wass-plan-size must be positive.")
     if args.voronoi_l2_max_iter <= 0:
         p.error("--voronoi-l2-max-iter must be positive.")
-    if args.voronoi_l2_objective_tol <= 0:
-        p.error("--voronoi-l2-objective-tol must be positive.")
-    if args.voronoi_l2_objective_patience <= 0:
-        p.error("--voronoi-l2-objective-patience must be positive.")
+    if args.voronoi_l2_relative_gap_tol < 0:
+        p.error("--voronoi-l2-relative-gap-tol must be non-negative.")
+    if args.voronoi_l2_gradient_tol < 0:
+        p.error("--voronoi-l2-gradient-tol must be non-negative.")
+    if args.voronoi_l2_stability_window <= 0:
+        p.error("--voronoi-l2-stability-window must be positive.")
+    if args.voronoi_l2_dual_relative_tol < 0:
+        p.error("--voronoi-l2-dual-relative-tol must be non-negative.")
+    if args.voronoi_l2_weight_l1_tol < 0:
+        p.error("--voronoi-l2-weight-l1-tol must be non-negative.")
+    if args.voronoi_l2_stability_patience <= 0:
+        p.error("--voronoi-l2-stability-patience must be positive.")
     if args.train_weight_sum <= 0:
         p.error("--train-weight-sum must be positive.")
     if args.out_dir is None:

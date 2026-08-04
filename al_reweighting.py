@@ -473,33 +473,100 @@ def _distance_chunk_size_torch(n_pool, n_labeled, device):
 
 
 class _VoronoiL2ConvergenceTracker:
-    """Backend-independent convergence rule for accepted L-BFGS iterates."""
+    """Backend-independent stopping rules for accepted L-BFGS updates."""
 
-    def __init__(self, objective_tol=1e-4, objective_patience=2, gradient_tol=1e-5):
-        self.objective_tol = float(objective_tol)
-        self.objective_patience = int(objective_patience)
+    def __init__(
+        self,
+        relative_gap_tol=1e-2,
+        gradient_tol=1e-4,
+        stability_window=10,
+        dual_relative_tol=1e-4,
+        weight_l1_tol=5e-3,
+        stability_patience=2,
+    ):
+        from collections import deque
+
+        self.relative_gap_tol = float(relative_gap_tol)
         self.gradient_tol = float(gradient_tol)
+        self.stability_window = int(stability_window)
+        self.dual_relative_tol = float(dual_relative_tol)
+        self.weight_l1_tol = float(weight_l1_tol)
+        self.stability_patience = int(stability_patience)
         self.previous_objective = None
-        self.small_improvement_streak = 0
+        self.stability_streak = 0
+        self._objective_window = deque(maxlen=self.stability_window + 1)
+        self._weight_window = deque(maxlen=self.stability_window + 1)
 
-    def observe(self, objective, grad_inf):
-        objective = float(objective)
-        grad_inf = float(grad_inf)
+    def observe(self, metrics, normalized_weights):
+        objective = float(metrics["dual_objective"])
+        grad_inf = float(metrics["grad_inf"])
+        relative_gap = float(metrics["relative_primal_dual_gap"])
         improvement = None
         if self.previous_objective is not None:
             improvement = self.previous_objective - objective
-            if 0.0 <= improvement < self.objective_tol:
-                self.small_improvement_streak += 1
-            else:
-                self.small_improvement_streak = 0
         self.previous_objective = objective
 
+        weights = np.asarray(normalized_weights, dtype=np.float64)
+        self._objective_window.append(objective)
+        self._weight_window.append(weights.copy())
+
+        dual_relative_improvement_window = None
+        normalized_weight_l1_change_window = None
+        stability_observation = False
+        if len(self._objective_window) == self.stability_window + 1:
+            old_objective = float(self._objective_window[0])
+            dual_improvement = old_objective - objective
+            objective_scale = max(abs(old_objective), abs(objective), 1e-12)
+            dual_relative_improvement_window = dual_improvement / objective_scale
+            normalized_weight_l1_change_window = float(
+                np.sum(np.abs(self._weight_window[-1] - self._weight_window[0]))
+            )
+            stability_observation = (
+                improvement is not None
+                and improvement >= 0.0
+                and 0.0 <= dual_relative_improvement_window <= self.dual_relative_tol
+                and normalized_weight_l1_change_window <= self.weight_l1_tol
+            )
+
+        if stability_observation:
+            self.stability_streak += 1
+        else:
+            self.stability_streak = 0
+
         stop_reason = None
-        if grad_inf <= self.gradient_tol:
+        if metrics["gap_certificate_valid"] and relative_gap <= self.relative_gap_tol:
+            stop_reason = "relative_gap_tolerance"
+        elif grad_inf <= self.gradient_tol:
             stop_reason = "gradient_tolerance"
-        elif self.small_improvement_streak >= self.objective_patience:
-            stop_reason = "objective_tolerance"
-        return improvement, self.small_improvement_streak, stop_reason
+        elif self.stability_streak >= self.stability_patience:
+            stop_reason = "stable_not_certified"
+        return {
+            "objective_improvement": improvement,
+            "dual_relative_improvement_window": dual_relative_improvement_window,
+            "normalized_weight_l1_change_window": normalized_weight_l1_change_window,
+            "stability_streak": int(self.stability_streak),
+            "stop_reason": stop_reason,
+        }
+
+
+def _relative_primal_dual_gap(primal_upper_bound, dual_lower_bound):
+    """Return a scale-free valid gap and whether weak duality is credible."""
+    primal = float(primal_upper_bound)
+    dual = float(dual_lower_bound)
+    raw_gap = primal - dual
+    scale = max(abs(primal), abs(dual), 1e-12)
+    numerical_slack = 1e-7 * scale
+    certificate_valid = raw_gap >= -numerical_slack
+    relative_gap = max(raw_gap, 0.0) / scale
+    return float(relative_gap), bool(certificate_valid)
+
+
+def _normalized_voronoi_l2_weights(z_pos, reweight_lambda):
+    raw_weights = np.asarray(z_pos, dtype=np.float64) / (2.0 * float(reweight_lambda))
+    raw_sum = float(raw_weights.sum())
+    if raw_sum > 0.0:
+        return raw_weights / raw_sum, raw_sum
+    return np.full(len(raw_weights), 1.0 / max(len(raw_weights), 1)), raw_sum
 
 
 def _voronoi_l2_primal_dual_metrics(z, counts, total_min_sum, n_pool, reweight_lambda):
@@ -525,13 +592,23 @@ def _voronoi_l2_primal_dual_metrics(z, counts, total_min_sum, n_pool, reweight_l
         + float(reweight_lambda) * float(np.dot(assignment_mass, assignment_mass))
     )
     dual_lower_bound = -dual_objective
+    primal_dual_gap = float(primal_upper_bound - dual_lower_bound)
+    relative_gap, certificate_valid = _relative_primal_dual_gap(
+        primal_upper_bound, dual_lower_bound
+    )
+    normalized_weights, raw_weight_sum = _normalized_voronoi_l2_weights(
+        z_pos, reweight_lambda
+    )
     return {
         "dual_objective": float(dual_objective),
         "dual_lower_bound": float(dual_lower_bound),
         "primal_upper_bound": float(primal_upper_bound),
-        "primal_dual_gap": float(primal_upper_bound - dual_lower_bound),
+        "primal_dual_gap": primal_dual_gap,
+        "relative_primal_dual_gap": relative_gap,
+        "gap_certificate_valid": certificate_valid,
         "grad_inf": float(np.max(np.abs(z_pos / (2.0 * reweight_lambda) - assignment_mass))),
-        "raw_weight_sum": float(np.sum(z_pos) / (2.0 * reweight_lambda)),
+        "raw_weight_sum": raw_weight_sum,
+        "normalized_weights": normalized_weights,
     }
 
 
@@ -540,9 +617,12 @@ class _VoronoiL2TraceRecorder:
         self,
         backend,
         max_iter,
-        objective_tol,
-        objective_patience,
+        relative_gap_tol,
         gradient_tol,
+        stability_window,
+        dual_relative_tol,
+        weight_l1_tol,
+        stability_patience,
         context=None,
         emit=None,
     ):
@@ -555,36 +635,54 @@ class _VoronoiL2TraceRecorder:
         self.started = time.perf_counter()
         self.records = []
         self.tracker = _VoronoiL2ConvergenceTracker(
-            objective_tol=objective_tol,
-            objective_patience=objective_patience,
+            relative_gap_tol=relative_gap_tol,
             gradient_tol=gradient_tol,
+            stability_window=stability_window,
+            dual_relative_tol=dual_relative_tol,
+            weight_l1_tol=weight_l1_tol,
+            stability_patience=stability_patience,
         )
 
-    def observe(self, metrics, function_evaluation):
+    def observe(self, metrics, function_evaluation, accepted_update):
         import time
 
-        improvement, streak, stop_reason = self.tracker.observe(
-            metrics["dual_objective"], metrics["grad_inf"]
+        convergence = self.tracker.observe(
+            metrics, metrics["normalized_weights"]
         )
+        stop_reason = convergence["stop_reason"]
         record = {
             **self.context,
             "backend": self.backend,
-            "iteration": len(self.records),
+            "iteration": int(accepted_update),
+            "accepted_update": int(accepted_update),
             "function_evaluation": int(function_evaluation),
             "dual_objective": float(metrics["dual_objective"]),
-            "objective_improvement": None if improvement is None else float(improvement),
-            "small_improvement_streak": int(streak),
+            "objective_improvement": convergence["objective_improvement"],
+            "dual_relative_improvement_window": convergence[
+                "dual_relative_improvement_window"
+            ],
+            "normalized_weight_l1_change_window": convergence[
+                "normalized_weight_l1_change_window"
+            ],
+            "stability_streak": convergence["stability_streak"],
             "grad_inf": float(metrics["grad_inf"]),
             "raw_weight_sum": float(metrics["raw_weight_sum"]),
             "primal_upper_bound": float(metrics["primal_upper_bound"]),
             "dual_lower_bound": float(metrics["dual_lower_bound"]),
             "primal_dual_gap": float(metrics["primal_dual_gap"]),
+            "relative_primal_dual_gap": float(metrics["relative_primal_dual_gap"]),
+            "gap_certificate_valid": bool(metrics["gap_certificate_valid"]),
             "elapsed_seconds": float(time.perf_counter() - self.started),
         }
         if stop_reason is not None:
             record["stop_reason"] = stop_reason
         self.records.append(record)
+        improvement = convergence["objective_improvement"]
         improvement_text = "n/a" if improvement is None else f"{improvement:.6e}"
+        window_dual = convergence["dual_relative_improvement_window"]
+        window_dual_text = "n/a" if window_dual is None else f"{window_dual:.6e}"
+        weight_change = convergence["normalized_weight_l1_change_window"]
+        weight_change_text = "n/a" if weight_change is None else f"{weight_change:.6e}"
         context_text = " ".join(
             f"{name}={self.context[name]}"
             for name in ("trial", "seed", "n_queries", "solve")
@@ -593,11 +691,14 @@ class _VoronoiL2TraceRecorder:
         self.emit(
             "    [Voronoi-L2][opt] "
             f"{context_text}{' ' if context_text else ''}"
-            f"backend={self.backend} iter={record['iteration']} "
+            f"backend={self.backend} update={record['accepted_update']} "
             f"eval={record['function_evaluation']} "
             f"dual={record['dual_objective']:.9e} "
             f"improvement={improvement_text} "
-            f"streak={streak} grad_inf={record['grad_inf']:.6e} "
+            f"rel_gap={record['relative_primal_dual_gap']:.6e} "
+            f"grad_inf={record['grad_inf']:.6e} "
+            f"dual_window={window_dual_text} weight_l1_window={weight_change_text} "
+            f"stability_streak={record['stability_streak']} "
             f"raw_sum={record['raw_weight_sum']:.9f} "
             f"primal={record['primal_upper_bound']:.9e} "
             f"dual_lb={record['dual_lower_bound']:.9e} "
@@ -610,17 +711,34 @@ class _VoronoiL2TraceRecorder:
         import time
 
         final = self.records[-1]
-        converged = stop_reason in {"gradient_tolerance", "objective_tolerance"}
+        certified = stop_reason in {"relative_gap_tolerance", "gradient_tolerance"}
+        stable_not_certified = stop_reason == "stable_not_certified"
+        converged = certified or stable_not_certified
+        if certified:
+            termination_class = "certified"
+        elif stable_not_certified:
+            termination_class = "stable_not_certified"
+        elif stop_reason == "max_iter":
+            termination_class = "max_iter_not_converged"
+        else:
+            termination_class = str(stop_reason)
         trace = {
             **self.context,
             "backend": self.backend,
             "max_iter": self.max_iter,
-            "objective_tolerance": self.tracker.objective_tol,
-            "objective_patience": self.tracker.objective_patience,
+            "relative_gap_tolerance": self.tracker.relative_gap_tol,
             "gradient_tolerance": self.tracker.gradient_tol,
+            "stability_window": self.tracker.stability_window,
+            "dual_relative_tolerance": self.tracker.dual_relative_tol,
+            "weight_l1_tolerance": self.tracker.weight_l1_tol,
+            "stability_patience": self.tracker.stability_patience,
             "iterations_completed": int(final["iteration"]),
+            "accepted_updates_completed": int(final["accepted_update"]),
             "function_evaluations": int(function_evaluations),
             "converged": bool(converged),
+            "certified": bool(certified),
+            "stable_not_certified": bool(stable_not_certified),
+            "termination_class": termination_class,
             "stop_reason": stop_reason,
             "initial_dual_objective": float(self.records[0]["dual_objective"]),
             "final_dual_objective": float(final["dual_objective"]),
@@ -628,7 +746,16 @@ class _VoronoiL2TraceRecorder:
                 self.records[0]["dual_objective"] - final["dual_objective"]
             ),
             "final_primal_dual_gap": float(final["primal_dual_gap"]),
+            "final_relative_primal_dual_gap": float(
+                final["relative_primal_dual_gap"]
+            ),
             "final_grad_inf": float(final["grad_inf"]),
+            "final_dual_relative_improvement_window": final[
+                "dual_relative_improvement_window"
+            ],
+            "final_normalized_weight_l1_change_window": final[
+                "normalized_weight_l1_change_window"
+            ],
             "elapsed_seconds": float(time.perf_counter() - self.started),
             "records": self.records,
         }
@@ -636,12 +763,14 @@ class _VoronoiL2TraceRecorder:
             trace["backend_message"] = str(backend_message)
         self.emit(
             "    [Voronoi-L2][summary] "
-            f"stop={stop_reason} converged={converged} "
-            f"iterations={trace['iterations_completed']}/{self.max_iter} "
+            f"stop={stop_reason} class={termination_class} converged={converged} "
+            f"certified={certified} stable_not_certified={stable_not_certified} "
+            f"updates={trace['accepted_updates_completed']}/{self.max_iter} "
             f"evals={function_evaluations} "
             f"dual_initial={trace['initial_dual_objective']:.9e} "
             f"dual_final={trace['final_dual_objective']:.9e} "
             f"gap={trace['final_primal_dual_gap']:.6e} "
+            f"rel_gap={trace['final_relative_primal_dual_gap']:.6e} "
             f"grad_inf={trace['final_grad_inf']:.6e} "
             f"elapsed={trace['elapsed_seconds']:.3f}s"
         )
@@ -659,10 +788,13 @@ def compute_voronoi_l2_weights(
     X_labeled,
     reweight_lambda=1.0,
     state=None,
-    max_iter=128,
-    objective_tol=1e-4,
-    objective_patience=2,
-    gradient_tol=1e-5,
+    max_iter=512,
+    relative_gap_tol=1e-2,
+    gradient_tol=1e-4,
+    stability_window=10,
+    dual_relative_tol=1e-4,
+    weight_l1_tol=5e-3,
+    stability_patience=2,
     trace_context=None,
     trace_logger=None,
 ):
@@ -680,19 +812,26 @@ def compute_voronoi_l2_weights(
         state = {}
     if max_iter <= 0:
         raise ValueError("max_iter must be positive")
-    if objective_tol <= 0:
-        raise ValueError("objective_tol must be positive")
-    if objective_patience <= 0:
-        raise ValueError("objective_patience must be positive")
+    if relative_gap_tol < 0:
+        raise ValueError("relative_gap_tol must be non-negative")
     if gradient_tol < 0:
         raise ValueError("gradient_tol must be non-negative")
+    if stability_window <= 0:
+        raise ValueError("stability_window must be positive")
+    if dual_relative_tol < 0:
+        raise ValueError("dual_relative_tol must be non-negative")
+    if weight_l1_tol < 0:
+        raise ValueError("weight_l1_tol must be non-negative")
+    if stability_patience <= 0:
+        raise ValueError("stability_patience must be positive")
 
     try:
         import torch
         if torch.cuda.is_available():
             return _voronoi_l2_weights_torch(
                 X_pool, X_labeled, reweight_lambda, state, max_iter,
-                objective_tol, objective_patience, gradient_tol,
+                relative_gap_tol, gradient_tol, stability_window,
+                dual_relative_tol, weight_l1_tol, stability_patience,
                 trace_context, trace_logger,
             )
     except ImportError:
@@ -700,7 +839,8 @@ def compute_voronoi_l2_weights(
 
     return _voronoi_l2_weights_numpy(
         X_pool, X_labeled, reweight_lambda, state, max_iter,
-        objective_tol, objective_patience, gradient_tol,
+        relative_gap_tol, gradient_tol, stability_window,
+        dual_relative_tol, weight_l1_tol, stability_patience,
         trace_context, trace_logger,
     )
 
@@ -710,10 +850,13 @@ def _voronoi_l2_weights_torch(
     X_labeled,
     reweight_lambda,
     state,
-    max_iter=128,
-    objective_tol=1e-4,
-    objective_patience=2,
-    gradient_tol=1e-5,
+    max_iter=512,
+    relative_gap_tol=1e-2,
+    gradient_tol=1e-4,
+    stability_window=10,
+    dual_relative_tol=1e-4,
+    weight_l1_tol=5e-3,
+    stability_patience=2,
     trace_context=None,
     trace_logger=None,
 ):
@@ -762,13 +905,31 @@ def _voronoi_l2_weights_torch(
                 + reweight_lambda_val * torch.sum(assignment_mass ** 2)
             )
             dual_lower_bound = -loss
+            primal_dual_gap = primal_upper_bound - dual_lower_bound
+            gap_scale = torch.maximum(
+                torch.maximum(torch.abs(primal_upper_bound), torch.abs(dual_lower_bound)),
+                torch.as_tensor(1e-12, dtype=z.dtype, device=device),
+            )
+            certificate_valid = primal_dual_gap >= -1e-7 * gap_scale
+            relative_gap = torch.clamp(primal_dual_gap, min=0.0) / gap_scale
+            raw_weights = z_pos / (2.0 * reweight_lambda_val)
+            raw_weight_sum = torch.sum(raw_weights)
+            if float(raw_weight_sum.detach().cpu().item()) > 0.0:
+                normalized_weights = raw_weights / raw_weight_sum
+            else:
+                normalized_weights = torch.full_like(
+                    raw_weights, 1.0 / max(n_labeled, 1)
+                )
             metrics_box.update({
                 "dual_objective": float(loss.detach().cpu().item()),
                 "dual_lower_bound": float(dual_lower_bound.detach().cpu().item()),
                 "primal_upper_bound": float(primal_upper_bound.detach().cpu().item()),
-                "primal_dual_gap": float((primal_upper_bound - dual_lower_bound).detach().cpu().item()),
+                "primal_dual_gap": float(primal_dual_gap.detach().cpu().item()),
+                "relative_primal_dual_gap": float(relative_gap.detach().cpu().item()),
+                "gap_certificate_valid": bool(certificate_valid.detach().cpu().item()),
                 "grad_inf": float(torch.max(torch.abs(grad_z)).detach().cpu().item()),
-                "raw_weight_sum": float((torch.sum(z_pos) / (2.0 * reweight_lambda_val)).detach().cpu().item()),
+                "raw_weight_sum": float(raw_weight_sum.detach().cpu().item()),
+                "normalized_weights": normalized_weights.detach().cpu().numpy(),
             })
             ctx.save_for_backward(grad_z)
             return loss
@@ -820,20 +981,27 @@ def _voronoi_l2_weights_torch(
     recorder = _VoronoiL2TraceRecorder(
         backend="torch_cuda",
         max_iter=max_iter,
-        objective_tol=objective_tol,
-        objective_patience=objective_patience,
+        relative_gap_tol=relative_gap_tol,
         gradient_tol=gradient_tol,
+        stability_window=stability_window,
+        dual_relative_tol=dual_relative_tol,
+        weight_l1_tol=weight_l1_tol,
+        stability_patience=stability_patience,
         context=trace_context,
         emit=trace_logger,
     )
     optimizer = torch.optim.LBFGS(
-        [z], lr=1.0, max_iter=max_iter, max_eval=max_iter + 1,
+        [z], lr=1.0, max_iter=1, max_eval=25,
         history_size=10, tolerance_grad=0.0, tolerance_change=0.0,
+        line_search_fn="strong_wolfe",
     )
     function_evaluations = 0
+    accepted_update = 0
+    initial_recorded = False
+    step_evaluations = []
 
     def closure():
-        nonlocal function_evaluations
+        nonlocal function_evaluations, initial_recorded
         optimizer.zero_grad()
         metrics_box = {}
         loss = VoronoiL2ReweightFunction.apply(
@@ -842,34 +1010,70 @@ def _voronoi_l2_weights_torch(
         )
         loss.backward()
         function_evaluations += 1
-        stop_reason = recorder.observe(metrics_box, function_evaluations)
-        if stop_reason is not None:
-            raise _VoronoiL2Converged(stop_reason)
+        step_evaluations.append({
+            "z": z.detach().cpu().numpy().copy(),
+            "metrics": metrics_box,
+            "function_evaluation": function_evaluations,
+        })
+        if not initial_recorded:
+            initial_recorded = True
+            stop_reason = recorder.observe(
+                metrics_box, function_evaluations, accepted_update=0
+            )
+            if stop_reason is not None:
+                raise _VoronoiL2Converged(stop_reason)
         return loss
 
     stop_reason = None
     backend_message = None
     try:
-        optimizer.step(closure)
+        while accepted_update < max_iter:
+            step_evaluations.clear()
+            optimizer_state = optimizer.state.get(z, {})
+            before_internal = int(optimizer_state.get("n_iter", 0))
+            z_before = z.detach().cpu().numpy().copy()
+            optimizer.step(closure)
+            optimizer_state = optimizer.state.get(z, {})
+            after_internal = int(optimizer_state.get("n_iter", 0))
+            z_after = z.detach().cpu().numpy().copy()
+            internal_updates = after_internal - before_internal
+            if internal_updates != 1 or np.array_equal(z_before, z_after):
+                stop_reason = "backend_internal_stop"
+                backend_message = (
+                    "PyTorch L-BFGS stopped without accepting the requested update."
+                )
+                break
+            accepted_metrics = next(
+                (
+                    evaluation
+                    for evaluation in reversed(step_evaluations)
+                    if np.array_equal(evaluation["z"], z_after)
+                ),
+                None,
+            )
+            if accepted_metrics is None:
+                stop_reason = "backend_failure"
+                backend_message = (
+                    "Could not match the strong-Wolfe accepted point to a "
+                    "closure evaluation."
+                )
+                break
+            accepted_update += 1
+            stop_reason = recorder.observe(
+                accepted_metrics["metrics"],
+                accepted_metrics["function_evaluation"],
+                accepted_update=accepted_update,
+            )
+            if stop_reason is not None:
+                break
     except _VoronoiL2Converged as exc:
         stop_reason = exc.reason
+    except RuntimeError as exc:
+        stop_reason = "backend_failure"
+        backend_message = str(exc)
 
     if stop_reason is None:
-        optimizer_state = optimizer.state.get(z, {})
-        internal_iterations = int(optimizer_state.get("n_iter", 0))
-        if internal_iterations >= max_iter:
-            try:
-                closure()
-            except _VoronoiL2Converged as exc:
-                stop_reason = exc.reason
-            else:
-                stop_reason = "max_iter"
-        else:
-            stop_reason = "backend_internal_stop"
-            backend_message = (
-                "PyTorch L-BFGS stopped before max_iter without satisfying the "
-                "explicit objective or gradient criteria."
-            )
+        stop_reason = "max_iter"
 
     with torch.no_grad():
         z_final = z.cpu().numpy()
@@ -895,10 +1099,13 @@ def _voronoi_l2_weights_numpy(
     X_labeled,
     reweight_lambda,
     state,
-    max_iter=128,
-    objective_tol=1e-4,
-    objective_patience=2,
-    gradient_tol=1e-5,
+    max_iter=512,
+    relative_gap_tol=1e-2,
+    gradient_tol=1e-4,
+    stability_window=10,
+    dual_relative_tol=1e-4,
+    weight_l1_tol=5e-3,
+    stability_patience=2,
     trace_context=None,
     trace_logger=None,
 ):
@@ -925,9 +1132,12 @@ def _voronoi_l2_weights_numpy(
     recorder = _VoronoiL2TraceRecorder(
         backend="scipy_cpu",
         max_iter=max_iter,
-        objective_tol=objective_tol,
-        objective_patience=objective_patience,
+        relative_gap_tol=relative_gap_tol,
         gradient_tol=gradient_tol,
+        stability_window=stability_window,
+        dual_relative_tol=dual_relative_tol,
+        weight_l1_tol=weight_l1_tol,
+        stability_patience=stability_patience,
         context=trace_context,
         emit=trace_logger,
     )
@@ -971,7 +1181,9 @@ def _voronoi_l2_weights_numpy(
             "function_evaluation": function_evaluations,
         })
         if not recorder.records:
-            stop_reason = recorder.observe(metrics, function_evaluations)
+            stop_reason = recorder.observe(
+                metrics, function_evaluations, accepted_update=0
+            )
             if stop_reason is not None:
                 raise _VoronoiL2Converged(stop_reason)
         return objective, grad
@@ -982,7 +1194,9 @@ def _voronoi_l2_weights_numpy(
         if not np.array_equal(last_evaluation.get("z"), xk):
             raise RuntimeError("SciPy callback did not match the cached accepted iterate")
         stop_reason = recorder.observe(
-            last_evaluation["metrics"], last_evaluation["function_evaluation"]
+            last_evaluation["metrics"],
+            last_evaluation["function_evaluation"],
+            accepted_update=len(recorder.records),
         )
         if stop_reason is not None:
             raise _VoronoiL2Converged(stop_reason)

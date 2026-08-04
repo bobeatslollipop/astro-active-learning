@@ -33,6 +33,12 @@ tracked representation, grouped by trial and solve. The optimizer minimizes
 the stored `dual_objective`; the corresponding lower bound is
 `dual_lower_bound = -dual_objective`, and `primal_dual_gap` is the difference
 between the recorded feasible primal upper bound and that dual lower bound.
+Schema-v2 traces also record the scale-free `relative_primal_dual_gap`, accepted
+update and function-evaluation counts, rolling dual improvement, normalized
+weight L1 change, and a termination class. `certified` means a gap or gradient
+tolerance was met; `stable_not_certified` means only the explicit dual/weight
+stability rule was met. Historical schema-v1 traces retain their original
+objective-plateau semantics.
 
 The small-scale Wasserstein-L2 objective audit writes `diagnostics.json`,
 `diagnostics.csv`, and `summary.txt` below `diagnostics/`. Candidate-wise

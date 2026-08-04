@@ -257,17 +257,30 @@ After reweighting, the training layer can optionally enforce an MP/MR total
 weight ratio and always normalizes to the selected training-weight total.
 
 Voronoi-L2 uses one convergence policy for the initial and warm-started solves:
-at most 128 accepted L-BFGS updates, with early stopping after two consecutive
-absolute dual-objective improvements below `1e-4`. A gradient infinity norm at
-or below `1e-5` also stops the solve. Override the budget or objective rule with
-`--voronoi-l2-max-iter`, `--voronoi-l2-objective-tol`, and
-`--voronoi-l2-objective-patience`.
+at most 512 accepted L-BFGS updates. A relative primal-dual gap at or below 1%
+or a gradient infinity norm at or below `1e-4` yields a certified stop. If no
+certificate is reached, two consecutive accepted updates must show both a
+10-update relative dual improvement at or below `1e-4` and normalized-weight
+L1 change at or below `5e-3`; this is recorded as `stable_not_certified` rather
+than certified convergence. Absolute objective plateaus are diagnostic only.
+
+The defaults can be changed with `--voronoi-l2-max-iter`,
+`--voronoi-l2-relative-gap-tol`, `--voronoi-l2-gradient-tol`, and the stability
+window, dual-relative, weight-L1, and patience controls shown by `--help`.
 
 Every accepted iterate is printed and appended to the run-local
 `optimizer.log`. The same records are saved by trial and query snapshot in
 `optimizer_trace_trials.json`, including the minimized dual objective, a
 feasible primal upper bound, dual lower bound, primal-dual gap, gradient
-infinity norm, raw weight sum, stopping reason, and elapsed time.
+infinity norm, rolling dual/weight stability, raw weight sum, stopping reason,
+and termination class. Trace schema v2 distinguishes accepted updates from
+function evaluations and explicitly records `certified` versus
+`stable_not_certified`.
+
+For a no-training calibration on the 100K warm-start split, run
+`diagnose_voronoi_l2_gap_stability_100k.py` on physical GPU 1. It reuses saved
+trial-1 query plans and writes an independent diagnostics bundle without
+changing completed active-learning runs.
 
 ## Evaluation and reproducibility
 
@@ -404,6 +417,7 @@ extremely concentrated.
 Important current runners include:
 
 - run_xgboost_noclassbalance_100k_warm_eval30_v2.sh
+- diagnose_voronoi_l2_gap_stability_100k.py
 - run_xgboost_kmedianpp_l2_lambda_sweep_noclassbalance_fixed10k.sh
 - run_xgboost_wasserstein_l2_noclassbalance_reweightfull_eval15.sh
 - run_xgboost_noclassbalance_matched_baselines.sh

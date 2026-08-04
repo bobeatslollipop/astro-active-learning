@@ -266,10 +266,13 @@ def main():
     parser.add_argument("--snapshot-every", type=int, default=15)
     parser.add_argument("--reweight-pool-size", type=int, default=100000)
     parser.add_argument("--reweight-lambda", type=float, default=100.0)
-    parser.add_argument("--production-max-iter", type=int, default=128)
-    parser.add_argument("--objective-tol", type=float, default=1e-4)
-    parser.add_argument("--objective-patience", type=int, default=2)
-    parser.add_argument("--gradient-tol", type=float, default=1e-5)
+    parser.add_argument("--production-max-iter", type=int, default=512)
+    parser.add_argument("--relative-gap-tol", type=float, default=1e-2)
+    parser.add_argument("--gradient-tol", type=float, default=1e-4)
+    parser.add_argument("--stability-window", type=int, default=10)
+    parser.add_argument("--dual-relative-tol", type=float, default=1e-4)
+    parser.add_argument("--weight-l1-tol", type=float, default=5e-3)
+    parser.add_argument("--stability-patience", type=int, default=2)
     parser.add_argument("--reference-extra-iter", type=int, default=32)
     parser.add_argument(
         "--query-plan-json",
@@ -335,9 +338,12 @@ def main():
             args.reweight_lambda,
             state=prod_state,
             max_iter=prod_iter,
-            objective_tol=args.objective_tol,
-            objective_patience=args.objective_patience,
+            relative_gap_tol=args.relative_gap_tol,
             gradient_tol=args.gradient_tol,
+            stability_window=args.stability_window,
+            dual_relative_tol=args.dual_relative_tol,
+            weight_l1_tol=args.weight_l1_tol,
+            stability_patience=args.stability_patience,
             trace_context={
                 "trial": int(args.trial + 1),
                 "seed": int(args.seed + args.trial),
@@ -366,9 +372,12 @@ def main():
             args.reweight_lambda,
             state=ref_state,
             max_iter=args.reference_extra_iter,
-            objective_tol=1e-12,
-            objective_patience=2,
+            relative_gap_tol=0.0,
             gradient_tol=0.0,
+            stability_window=args.reference_extra_iter + 1,
+            dual_relative_tol=0.0,
+            weight_l1_tol=0.0,
+            stability_patience=args.reference_extra_iter + 1,
             trace_context={
                 "trial": int(args.trial + 1),
                 "seed": int(args.seed + args.trial),
@@ -397,12 +406,16 @@ def main():
                 prod_state["last_optimizer_trace"]["iterations_completed"]
             ),
             "production_stop_reason": prod_state["last_optimizer_trace"]["stop_reason"],
+            "production_termination_class": prod_state["last_optimizer_trace"]["termination_class"],
             "production_primal_dual_gap": prod_state["last_optimizer_trace"]["final_primal_dual_gap"],
+            "production_relative_primal_dual_gap": prod_state["last_optimizer_trace"]["final_relative_primal_dual_gap"],
             "reference_iterations_completed": int(
                 ref_state["last_optimizer_trace"]["iterations_completed"]
             ),
             "reference_stop_reason": ref_state["last_optimizer_trace"]["stop_reason"],
+            "reference_termination_class": ref_state["last_optimizer_trace"]["termination_class"],
             "reference_primal_dual_gap": ref_state["last_optimizer_trace"]["final_primal_dual_gap"],
+            "reference_relative_primal_dual_gap": ref_state["last_optimizer_trace"]["final_relative_primal_dual_gap"],
             "production_time_s": float(prod_time),
             "reference_time_s": float(ref_time),
             "prod_dual_objective": prod_diag["dual_objective"],
@@ -446,13 +459,14 @@ def main():
         "reweight_lambda": args.reweight_lambda,
         "reweight_pool_size": args.reweight_pool_size,
         "production_max_iter": args.production_max_iter,
-        "objective_tolerance": args.objective_tol,
-        "objective_patience": args.objective_patience,
+        "relative_gap_tolerance": args.relative_gap_tol,
         "gradient_tolerance": args.gradient_tol,
+        "stability_window": args.stability_window,
+        "dual_relative_tolerance": args.dual_relative_tol,
+        "weight_l1_tolerance": args.weight_l1_tol,
+        "stability_patience": args.stability_patience,
         "reference_extra_iter": args.reference_extra_iter,
-        "reference_objective_tolerance": 1e-12,
-        "reference_objective_patience": 2,
-        "reference_gradient_tolerance": 0.0,
+        "reference_stopping_disabled": True,
         "query_plan_source": query_plan_source,
         "total_runtime_s": total_time,
         "data_counts": counts,

@@ -29,7 +29,13 @@ N_TRIALS=5
 N_SNAPSHOTS=10
 SOFT_TOPK=20
 REWEIGHT_POOL=100000
-VORONOI_L2_MAX_ITER=128
+VORONOI_L2_MAX_ITER=512
+VORONOI_L2_RELATIVE_GAP_TOL=1e-2
+VORONOI_L2_GRADIENT_TOL=1e-4
+VORONOI_L2_STABILITY_WINDOW=10
+VORONOI_L2_DUAL_RELATIVE_TOL=1e-4
+VORONOI_L2_WEIGHT_L1_TOL=5e-3
+VORONOI_L2_STABILITY_PATIENCE=2
 
 XGB_N_ESTIMATORS=700
 XGB_MAX_DEPTH=6
@@ -122,6 +128,12 @@ run_if_missing "$KMED_L2_OUT" \
     --reweight-pool-size "$REWEIGHT_POOL" \
     --reweight-lambda 100 \
     --voronoi-l2-max-iter "$VORONOI_L2_MAX_ITER" \
+    --voronoi-l2-relative-gap-tol "$VORONOI_L2_RELATIVE_GAP_TOL" \
+    --voronoi-l2-gradient-tol "$VORONOI_L2_GRADIENT_TOL" \
+    --voronoi-l2-stability-window "$VORONOI_L2_STABILITY_WINDOW" \
+    --voronoi-l2-dual-relative-tol "$VORONOI_L2_DUAL_RELATIVE_TOL" \
+    --voronoi-l2-weight-l1-tol "$VORONOI_L2_WEIGHT_L1_TOL" \
+    --voronoi-l2-stability-patience "$VORONOI_L2_STABILITY_PATIENCE" \
     --out-dir "$KMED_L2_OUT"
 
 echo ""
