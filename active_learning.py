@@ -80,7 +80,7 @@ def main():
        help="Covariate-shift correction: none=uniform, hard=Voronoi assignment, soft=temperature softmin, voronoi_l2/kl=regularized Wasserstein final weights, moment_l2=linear second-moment weights.")
     a("--reweight-lambda", type=float, default=1.0,
        help="Regularisation strength lambda for voronoi_l2, kl, or moment_l2 reweighting.")
-    a("--voronoi-l2-max-iter", type=int, default=512,
+    a("--voronoi-l2-max-iter", type=int, default=1024,
       help="Maximum accepted L-BFGS updates for each voronoi_l2 reweighting solve.")
     a("--voronoi-l2-relative-gap-tol", type=float, default=1e-2,
        help="Certified relative primal-dual gap tolerance for voronoi_l2 convergence.")
@@ -94,6 +94,16 @@ def main():
        help="Maximum normalized-weight L1 change across the stability window.")
     a("--voronoi-l2-stability-patience", type=int, default=2,
        help="Consecutive stable accepted updates required for stable_not_certified.")
+    a("--wasserstein-l2-coordinate-steps", type=int, default=32,
+      help="Bisection steps for each Wasserstein-L2 v3 candidate coordinate.")
+    a("--wasserstein-l2-corrective-max-sweeps", type=int, default=128,
+      help="Maximum cyclic correction sweeps over coordinates added in one query batch.")
+    a("--wasserstein-l2-corrective-dual-relative-tol", type=float, default=1e-8,
+      help="Relative restricted-dual objective tolerance for v3 batch correction.")
+    a("--wasserstein-l2-corrective-z-relative-tol", type=float, default=1e-6,
+      help="Scaled maximum coordinate-change tolerance for v3 batch correction.")
+    a("--wasserstein-l2-corrective-patience", type=int, default=2,
+      help="Consecutive stable sweeps required for v3 batch correction.")
     a("--temperature", type=float, default=1.0,
        help="Temperature τ for soft reweighting. τ→0 = hard, τ→∞ = uniform. Only used when --reweighting=soft.")
     a("--soft-topk", type=int, default=0,
@@ -120,9 +130,13 @@ def main():
            "first and removes them from warm-start training and query candidates.")
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
-    a("--wass-pool-size",  type=int, default=50000,    help="Subpool size for Wasserstein / Wasserstein-L2 / entropicOT strategy. Brute-force search is O(n × pool_size²).")
+    a("--wass-pool-size",  type=int, default=50000,
+      help="Candidate subpool size for Wasserstein-family strategies. "
+           "Wasserstein-L2 v3 scores these candidates on the actual reweight target.")
     a("--wass-plan-size", type=int, default=None,
-      help="Number of Wasserstein-greedy points to plan before rebuilding the random subpool. Defaults to eval_every; set to total_queries to reproduce old one-shot planning.")
+      help="Number of Wasserstein-greedy points to plan before rebuilding the random subpool. "
+           "Wasserstein-L2 v3 always plans only the current query batch because each "
+           "reweight snapshot changes its power diagram.")
     a("--eot-temperature", type=float, default=1.0,
        help="Temperature τ for entropicOT query strategy. τ→0 = hard Wasserstein, τ→∞ = uniform. Only used when --strategy=entropicOT.")
     a("--moment-ridge", type=float, default=1.0,
@@ -154,6 +168,16 @@ def main():
         p.error("--voronoi-l2-weight-l1-tol must be non-negative.")
     if args.voronoi_l2_stability_patience <= 0:
         p.error("--voronoi-l2-stability-patience must be positive.")
+    if args.wasserstein_l2_coordinate_steps <= 0:
+        p.error("--wasserstein-l2-coordinate-steps must be positive.")
+    if args.wasserstein_l2_corrective_max_sweeps <= 0:
+        p.error("--wasserstein-l2-corrective-max-sweeps must be positive.")
+    if args.wasserstein_l2_corrective_dual_relative_tol < 0:
+        p.error("--wasserstein-l2-corrective-dual-relative-tol must be non-negative.")
+    if args.wasserstein_l2_corrective_z_relative_tol < 0:
+        p.error("--wasserstein-l2-corrective-z-relative-tol must be non-negative.")
+    if args.wasserstein_l2_corrective_patience <= 0:
+        p.error("--wasserstein-l2-corrective-patience must be positive.")
     if args.train_weight_sum <= 0:
         p.error("--train-weight-sum must be positive.")
     if args.out_dir is None:

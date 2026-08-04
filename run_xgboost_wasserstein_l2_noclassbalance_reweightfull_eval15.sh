@@ -25,13 +25,18 @@ N_TRIALS=5
 N_SNAPSHOTS=10
 SOFT_TOPK=20
 REWEIGHT_POOL=100000
-VORONOI_L2_MAX_ITER=512
+VORONOI_L2_MAX_ITER=1024
 VORONOI_L2_RELATIVE_GAP_TOL=1e-2
 VORONOI_L2_GRADIENT_TOL=1e-4
 VORONOI_L2_STABILITY_WINDOW=10
 VORONOI_L2_DUAL_RELATIVE_TOL=1e-4
 VORONOI_L2_WEIGHT_L1_TOL=5e-3
 VORONOI_L2_STABILITY_PATIENCE=2
+WASSERSTEIN_L2_COORDINATE_STEPS=32
+WASSERSTEIN_L2_CORRECTIVE_MAX_SWEEPS=128
+WASSERSTEIN_L2_CORRECTIVE_DUAL_RELATIVE_TOL=1e-8
+WASSERSTEIN_L2_CORRECTIVE_Z_RELATIVE_TOL=1e-6
+WASSERSTEIN_L2_CORRECTIVE_PATIENCE=2
 
 LAMBDAS=(10 100 1000 10000)
 
@@ -49,14 +54,14 @@ XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
 RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
-RESULT_ROOT="${RESULTS_ROOT}/xgb_wasserstein_l2_noclassbalance_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}"
-mkdir -p "${RESULT_ROOT}/figures/final"
+RESULT_ROOT="${RESULTS_ROOT}/xgb_wasserstein_l2_v3_noclassbalance_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}"
 HARD_OUT_DIR="${RESULT_ROOT}/al_xgb_wasserstein_hard_${TOTAL_QUERIES}_lambda_0"
 
 if [[ -e "$RESULT_ROOT" ]]; then
   echo "Refusing to overwrite existing result root: $RESULT_ROOT" >&2
   exit 1
 fi
+mkdir -p "${RESULT_ROOT}/figures/final"
 
 COMMON_ARGS=(
   --warm-start-file "$WARM_START"
@@ -110,7 +115,7 @@ python active_learning.py \
   --out-dir "$HARD_OUT_DIR"
 
 for lambda in "${LAMBDAS[@]}"; do
-  out_dir="${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${lambda}"
+  out_dir="${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${lambda}"
   echo ""
   echo "============================================================"
   echo "  Strategy:       wasserstein_l2"
@@ -135,6 +140,11 @@ for lambda in "${LAMBDAS[@]}"; do
     --voronoi-l2-dual-relative-tol "$VORONOI_L2_DUAL_RELATIVE_TOL" \
     --voronoi-l2-weight-l1-tol "$VORONOI_L2_WEIGHT_L1_TOL" \
     --voronoi-l2-stability-patience "$VORONOI_L2_STABILITY_PATIENCE" \
+    --wasserstein-l2-coordinate-steps "$WASSERSTEIN_L2_COORDINATE_STEPS" \
+    --wasserstein-l2-corrective-max-sweeps "$WASSERSTEIN_L2_CORRECTIVE_MAX_SWEEPS" \
+    --wasserstein-l2-corrective-dual-relative-tol "$WASSERSTEIN_L2_CORRECTIVE_DUAL_RELATIVE_TOL" \
+    --wasserstein-l2-corrective-z-relative-tol "$WASSERSTEIN_L2_CORRECTIVE_Z_RELATIVE_TOL" \
+    --wasserstein-l2-corrective-patience "$WASSERSTEIN_L2_CORRECTIVE_PATIENCE" \
     --out-dir "$out_dir"
 done
 
@@ -145,42 +155,42 @@ echo "============================================================"
 
 python compare_auc_trials.py \
   "$HARD_OUT_DIR" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_noclassbalance_reweightfull_average_precision.png" \
   --metric average_precision \
-  --labels "lambda=0 hard" "lambda=1e1" "lambda=1e2" "lambda=1e3" "lambda=1e4" \
+  --labels "lambda=0 hard" "v3 lambda=1e1" "v3 lambda=1e2" "v3 lambda=1e3" "v3 lambda=1e4" \
   --cmap-runs viridis
 
 python compare_auc_trials.py \
   "$HARD_OUT_DIR" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_noclassbalance_reweightfull_pr_auc_trapz.png" \
   --metric pr_auc \
-  --labels "lambda=0 hard" "lambda=1e1" "lambda=1e2" "lambda=1e3" "lambda=1e4" \
+  --labels "lambda=0 hard" "v3 lambda=1e1" "v3 lambda=1e2" "v3 lambda=1e3" "v3 lambda=1e4" \
   --cmap-runs viridis
 
 python compare_weight_l2_trials.py \
   "$HARD_OUT_DIR" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   --metric objective_l2_norm \
   --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_noclassbalance_reweightfull_weight_l2_norm.png" \
   --labels "lambda=0 hard" "lambda=1e1" "lambda=1e2" "lambda=1e3" "lambda=1e4"
 
 python compare_weight_l2_trials.py \
   "$HARD_OUT_DIR" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}" \
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}" \
   --metric effective_sample_size \
   --out "${RESULT_ROOT}/figures/final/xgb_wasserstein_l2_noclassbalance_reweightfull_effective_sample_size.png" \
   --labels "lambda=0 hard" "lambda=1e1" "lambda=1e2" "lambda=1e3" "lambda=1e4"

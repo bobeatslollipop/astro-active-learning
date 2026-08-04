@@ -45,6 +45,13 @@ The small-scale Wasserstein-L2 objective audit writes `diagnostics.json`,
 regularized-OT results are called exact only when their primal/dual intervals
 certify a unique winner; an overlapping comparison is recorded as unresolved.
 
+Wasserstein-L2 v3 stores its query-side trace inside each batch entry of
+`query_plan_trials.json`. The trace records the 45K-style candidate subpool
+hash, actual reweight-target row count, restricted-dual insertion drop, selected
+dual coordinate, new-block corrective objective and convergence diagnostics,
+and the source reweight solve's termination class. These values are diagnostic:
+`restricted_dual_drop` is not a certified primal-objective improvement.
+
 Before adding a new artifact type, check whether it is compact and genuinely
 needed for analysis.  Add a narrow allow rule instead of unignoring an entire
 run directory.

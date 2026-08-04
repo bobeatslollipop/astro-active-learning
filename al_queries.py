@@ -1,5 +1,6 @@
 """Active-learning query strategies and geometric planning helpers."""
 
+import hashlib
 import time
 
 import numpy as np
@@ -8,8 +9,9 @@ from scipy.spatial.distance import cdist
 from al_data import _timing, mp_probability
 
 
-WASSERSTEIN_L2_QUERY_OBJECTIVE = "voronoi_wwd_plus_full_cell_mass_l2"
-WASSERSTEIN_L2_IMPLEMENTATION_VERSION = 2
+WASSERSTEIN_L2_QUERY_OBJECTIVE = "power_diagram_restricted_dual_drop"
+WASSERSTEIN_L2_IMPLEMENTATION_VERSION = 3
+WASSERSTEIN_L2_DUAL_UPDATE = "fixed_old_z_block_corrective_new_coordinates"
 
 
 def query_random(X_pool, clf, n, rng, **kw):
@@ -174,21 +176,23 @@ def query_wasserstein(X_pool, clf, n, rng, *, X_labeled=None, state=None,
 
 def query_wasserstein_l2(X_pool, clf, n, rng, *, X_labeled=None, state=None,
                          pool_size=50000, plan_size=None, available_mask=None,
-                         reweight_lambda=1.0, **kw):
-    """Greedy Wasserstein query with the complete Voronoi-L2 mass penalty.
+                         reweight_lambda=1.0, reweight_target=None,
+                         voronoi_l2_state=None, coordinate_steps=32,
+                         corrective_max_sweeps=128,
+                         corrective_dual_relative_tol=1e-8,
+                         corrective_z_relative_tol=1e-6,
+                         corrective_patience=2, candidate_chunk_size=None,
+                         **kw):
+    """Power-cell greedy insertion with fixed old dual variables (v3).
 
-    This follows the same subpool planning structure as ``query_wasserstein``,
-    but scores each candidate by
+    The preceding Voronoi-L2 reweighting solve supplies the old support dual
+    ``z*`` and adjusted target costs ``b_t = min_i(d(t, s_i) + z_i*)``.  Each
+    candidate optimises only its new scalar coordinate.  After selection, all
+    coordinates introduced in the current query batch are jointly corrected
+    by cyclic exact-coordinate updates while the old ``z*`` remains fixed.
 
-        WWD(S union {u}, T)
-        + lambda * [w_u^2 + sum_i (w_i - c_{i,u})^2]
-
-    Here ``w_i`` is the current nearest-neighbour Voronoi mass of support cell
-    ``i``, ``c_{i,u}`` is the mass candidate ``u`` captures from that cell,
-    and ``w_u = sum_i c_{i,u}``.  This is the full updated-cell penalty for
-    the nearest-neighbour Voronoi plan.  It does not re-optimise the complete
-    regularised transport plan for every candidate.  The regulariser uses the
-    same lambda as ``--reweighting voronoi_l2``.
+    The score is a restricted-dual drop, not a certified primal-objective
+    decrease and not the exact candidate-wise regularized-OT greedy objective.
     """
     if state is None:
         state = {}
@@ -209,69 +213,64 @@ def query_wasserstein_l2(X_pool, clf, n, rng, *, X_labeled=None, state=None,
 
     if len(available_idx) == 0:
         return np.empty(0, dtype=np.intp)
+    if reweight_target is None:
+        raise ValueError(
+            "wasserstein_l2 v3 requires the actual Voronoi-L2 reweight target."
+        )
+    if voronoi_l2_state is None:
+        raise ValueError(
+            "wasserstein_l2 v3 requires the preceding Voronoi-L2 optimizer state."
+        )
+    if coordinate_steps <= 0:
+        raise ValueError("coordinate_steps must be positive")
+    if corrective_max_sweeps <= 0:
+        raise ValueError("corrective_max_sweeps must be positive")
+    if corrective_dual_relative_tol < 0 or corrective_z_relative_tol < 0:
+        raise ValueError("corrective tolerances must be non-negative")
+    if corrective_patience <= 0:
+        raise ValueError("corrective_patience must be positive")
 
-    plan_n = int(plan_size) if plan_size is not None else n_pick
-    plan_n = max(plan_n, n_pick)
-    plan_is_valid = (
-        state.get("pool_n") == n_pool
-        and state.get("pool_array_id") == id(X_pool)
-        and state.get("pool_size") == pool_size
-        and state.get("plan_size") == plan_n
-        and state.get("reweight_lambda") == lam
-        and "planned_indices" in state
-        and "plan_cursor" in state
+    from al_reweighting import ensure_voronoi_l2_power_state
+
+    power_state = ensure_voronoi_l2_power_state(
+        reweight_target, X_labeled, lam, voronoi_l2_state
     )
-
-    if not plan_is_valid or state["plan_cursor"] >= len(state["planned_indices"]):
-        t_plan = time.perf_counter()
-        state["planned_indices"] = _build_wasserstein_l2_plan(
-            X_pool, X_labeled, plan_n, rng, pool_size, available_idx, lam
+    t_plan = time.perf_counter()
+    planned, trace = _build_wasserstein_l2_plan(
+        X_pool,
+        n_pick,
+        rng,
+        pool_size,
+        available_idx,
+        reweight_target,
+        power_state,
+        lam,
+        coordinate_steps=coordinate_steps,
+        corrective_max_sweeps=corrective_max_sweeps,
+        corrective_dual_relative_tol=corrective_dual_relative_tol,
+        corrective_z_relative_tol=corrective_z_relative_tol,
+        corrective_patience=corrective_patience,
+        candidate_chunk_size=candidate_chunk_size,
+    )
+    selected = np.asarray(planned, dtype=np.intp)
+    for step, pool_index in zip(trace["steps"], selected):
+        step["pool_index"] = int(pool_index)
+    source_trace = voronoi_l2_state.get("last_optimizer_trace", {})
+    trace["source_reweight_solve"] = {
+        key: source_trace.get(key)
+        for key in (
+            "trial", "seed", "n_queries", "solve", "stop_reason",
+            "termination_class", "converged", "certified",
+            "stable_not_certified", "accepted_updates_completed",
+            "final_relative_primal_dual_gap", "final_grad_inf",
         )
-        state["plan_cursor"] = 0
-        state["pool_n"] = n_pool
-        state["pool_array_id"] = id(X_pool)
-        state["pool_size"] = pool_size
-        state["plan_size"] = plan_n
-        state["reweight_lambda"] = lam
-        _timing("Wasserstein-L2 plan build", t_plan)
-
-    selected = []
-    while len(selected) < n_pick:
-        planned = state["planned_indices"]
-        cursor = state["plan_cursor"]
-        while len(selected) < n_pick and cursor < len(planned):
-            idx = int(planned[cursor])
-            cursor += 1
-            if available_mask is None or available_mask[idx]:
-                selected.append(idx)
-        state["plan_cursor"] = cursor
-
-        if len(selected) >= n_pick or cursor < len(planned):
-            break
-
-        selected_arr = np.array(selected, dtype=np.intp)
-        if len(selected_arr) > 0:
-            keep = ~np.isin(available_idx, selected_arr)
-            extra_available = available_idx[keep]
-            X_seed = X_pool[selected_arr]
-            if X_labeled is not None and len(X_labeled) > 0:
-                X_seed = np.vstack([X_labeled, X_seed])
-        else:
-            extra_available = available_idx
-            X_seed = X_labeled
-
-        missing = n_pick - len(selected)
-        if len(extra_available) == 0:
-            break
-
-        t_plan = time.perf_counter()
-        state["planned_indices"] = _build_wasserstein_l2_plan(
-            X_pool, X_seed, missing, rng, pool_size, extra_available, lam
-        )
-        state["plan_cursor"] = 0
-        _timing("Wasserstein-L2 plan extension", t_plan)
-
-    return np.array(selected, dtype=np.intp)
+        if key in source_trace
+    }
+    trace["elapsed_seconds"] = float(time.perf_counter() - t_plan)
+    state.clear()
+    state["last_plan_trace"] = trace
+    _timing("Wasserstein-L2 v3 plan build", t_plan)
+    return selected
 
 
 def _build_wasserstein_plan(X_pool, X_labeled, n_plan, rng, pool_size, available_idx):
@@ -300,16 +299,33 @@ def _build_wasserstein_plan(X_pool, X_labeled, n_plan, rng, pool_size, available
     return subpool_idx[np.array(chosen, dtype=np.intp)]
 
 
-def _build_wasserstein_l2_plan(X_pool, X_labeled, n_plan, rng, pool_size,
-                               available_idx, reweight_lambda):
-    """Build a greedy regularized-Wasserstein query plan over a fixed pool."""
+def _build_wasserstein_l2_plan(
+    X_pool,
+    n_plan,
+    rng,
+    pool_size,
+    available_idx,
+    reweight_target,
+    power_state,
+    reweight_lambda,
+    *,
+    coordinate_steps=32,
+    corrective_max_sweeps=128,
+    corrective_dual_relative_tol=1e-8,
+    corrective_z_relative_tol=1e-6,
+    corrective_patience=2,
+    candidate_chunk_size=None,
+):
+    """Build one v3 plan; no plan tail survives the next reweight solve."""
     effective_ps = min(pool_size, len(available_idx))
     if effective_ps <= 0:
-        return np.empty(0, dtype=np.intp)
+        return np.empty(0, dtype=np.intp), {"steps": []}
 
     n_plan = min(n_plan, effective_ps)
     subpool_idx = rng.choice(available_idx, effective_ps, replace=False)
-    T = X_pool[subpool_idx]
+    candidates = X_pool[subpool_idx]
+    target = np.asarray(reweight_target)
+    base_cost = np.asarray(power_state["base_cost"], dtype=np.float32)
 
     try:
         import torch
@@ -317,12 +333,39 @@ def _build_wasserstein_l2_plan(X_pool, X_labeled, n_plan, rng, pool_size,
     except ImportError:
         has_torch = False
 
+    coupling_kwargs = {
+        "coordinate_steps": coordinate_steps,
+        "corrective_max_sweeps": corrective_max_sweeps,
+        "corrective_dual_relative_tol": corrective_dual_relative_tol,
+        "corrective_z_relative_tol": corrective_z_relative_tol,
+        "corrective_patience": corrective_patience,
+        "candidate_chunk_size": candidate_chunk_size,
+    }
     if has_torch and torch.cuda.is_available():
-        chosen = _wasserstein_l2_coupling_torch(T, X_labeled, n_plan, reweight_lambda)
+        chosen, trace = _wasserstein_l2_coupling_torch(
+            candidates, target, base_cost, n_plan, reweight_lambda,
+            **coupling_kwargs,
+        )
     else:
-        chosen = _wasserstein_l2_coupling_numpy(T, X_labeled, n_plan, reweight_lambda)
+        chosen, trace = _wasserstein_l2_coupling_numpy(
+            candidates, target, base_cost, n_plan, reweight_lambda,
+            **coupling_kwargs,
+        )
 
-    return subpool_idx[np.array(chosen, dtype=np.intp)]
+    trace.update({
+        "schema_version": 1,
+        "query_objective": WASSERSTEIN_L2_QUERY_OBJECTIVE,
+        "query_implementation_version": WASSERSTEIN_L2_IMPLEMENTATION_VERSION,
+        "query_dual_update": WASSERSTEIN_L2_DUAL_UPDATE,
+        "target_source": "reweight_target",
+        "target_rows": int(len(target)),
+        "candidate_rows": int(len(candidates)),
+        "candidate_subpool_sha256": hashlib.sha256(
+            np.asarray(subpool_idx, dtype="<i8").tobytes()
+        ).hexdigest(),
+        "power_diagram_generation": int(power_state["generation"]),
+    })
+    return subpool_idx[np.asarray(chosen, dtype=np.intp)], trace
 
 
 def _init_min_dists_torch(X_sub, X_sub_sq_norms, X_labeled, state, label="Wasserstein"):
@@ -891,8 +934,8 @@ def _wasserstein_coupling_torch(T, X_labeled, n_pick, rng):
     return chosen
 
 
-def _wasserstein_l2_coupling_numpy(T, X_labeled, n_pick, reweight_lambda):
-    """CPU full-Voronoi-L2 greedy coupling (implementation version 2)."""
+def _wasserstein_l2_v2_coupling_numpy(T, X_labeled, n_pick, reweight_lambda):
+    """Historical CPU full-Voronoi-L2 greedy coupling (version 2)."""
     ps = len(T)
     lam = float(reweight_lambda)
 
@@ -949,8 +992,8 @@ def _wasserstein_l2_coupling_numpy(T, X_labeled, n_pick, reweight_lambda):
     return chosen
 
 
-def _wasserstein_l2_coupling_torch(T, X_labeled, n_pick, reweight_lambda):
-    """CUDA full-Voronoi-L2 greedy coupling (implementation version 2)."""
+def _wasserstein_l2_v2_coupling_torch(T, X_labeled, n_pick, reweight_lambda):
+    """Historical CUDA full-Voronoi-L2 greedy coupling (version 2)."""
     import torch
     device = torch.device('cuda')
     ps = len(T)
@@ -1016,6 +1059,672 @@ def _wasserstein_l2_coupling_torch(T, X_labeled, n_pick, reweight_lambda):
     del T_t, intra_dists, wwds, penalties, cell_ids, cell_counts
     torch.cuda.empty_cache()
     return chosen
+
+
+def _restricted_coordinate_numpy(residuals, reweight_lambda, steps=32):
+    """Solve independent one-coordinate insertion problems by bisection.
+
+    ``residuals[c, t]`` is ``b_t - d(t, u_c)``.  Strict ``residual > z``
+    implements old-cell wins on adjusted-cost ties.
+    """
+    residuals = np.asarray(residuals)
+    if residuals.ndim == 1:
+        residuals = residuals[np.newaxis, :]
+    if residuals.ndim != 2 or residuals.shape[1] == 0:
+        raise ValueError("residuals must have shape (candidates, nonempty_target)")
+    lam = float(reweight_lambda)
+    if lam <= 0 or int(steps) <= 0:
+        raise ValueError("reweight_lambda and steps must be positive")
+
+    n_target = residuals.shape[1]
+    lo = np.zeros(residuals.shape[0], dtype=np.float64)
+    hi = np.minimum(
+        2.0 * lam,
+        np.maximum(residuals.max(axis=1).astype(np.float64), 0.0),
+    )
+    for _ in range(int(steps)):
+        mid = 0.5 * (lo + hi)
+        mass = np.count_nonzero(
+            residuals > mid.astype(residuals.dtype)[:, np.newaxis], axis=1
+        ).astype(np.float64) / float(n_target)
+        derivative = mid / (2.0 * lam) - mass
+        move_lo = derivative < 0.0
+        lo[move_lo] = mid[move_lo]
+        hi[~move_lo] = mid[~move_lo]
+
+    def objective(z):
+        hinge = np.maximum(
+            residuals - z.astype(residuals.dtype)[:, np.newaxis], 0.0
+        ).sum(axis=1, dtype=np.float64) / float(n_target)
+        return np.square(z) / (4.0 * lam) + hinge
+
+    objective_lo = objective(lo)
+    objective_hi = objective(hi)
+    use_hi = objective_hi < objective_lo
+    z = np.where(use_hi, hi, lo)
+    value = np.where(use_hi, objective_hi, objective_lo)
+    return z, value
+
+
+def _restricted_coordinate_torch(residuals, reweight_lambda, steps=32):
+    """CUDA counterpart of :func:`_restricted_coordinate_numpy`."""
+    import torch
+
+    if residuals.ndim == 1:
+        residuals = residuals.unsqueeze(0)
+    if residuals.ndim != 2 or residuals.shape[1] == 0:
+        raise ValueError("residuals must have shape (candidates, nonempty_target)")
+    lam = float(reweight_lambda)
+    if lam <= 0 or int(steps) <= 0:
+        raise ValueError("reweight_lambda and steps must be positive")
+
+    n_target = residuals.shape[1]
+    work_dtype = residuals.dtype
+    lo = torch.zeros(
+        residuals.shape[0], dtype=work_dtype, device=residuals.device
+    )
+    hi = torch.minimum(
+        torch.full_like(lo, 2.0 * lam),
+        torch.clamp(residuals.max(dim=1).values, min=0.0),
+    )
+    for _ in range(int(steps)):
+        mid = 0.5 * (lo + hi)
+        mass = torch.sum(
+            residuals > mid.unsqueeze(1), dim=1, dtype=torch.float64
+        ) / float(n_target)
+        derivative = mid.to(torch.float64) / (2.0 * lam) - mass
+        move_lo = derivative < 0.0
+        lo = torch.where(move_lo, mid, lo)
+        hi = torch.where(move_lo, hi, mid)
+
+    def objective(z):
+        hinge = torch.clamp(
+            residuals - z.unsqueeze(1), min=0.0
+        ).sum(dim=1, dtype=torch.float64) / float(n_target)
+        return z.to(torch.float64).square() / (4.0 * lam) + hinge
+
+    objective_lo = objective(lo)
+    objective_hi = objective(hi)
+    use_hi = objective_hi < objective_lo
+    z = torch.where(use_hi, hi, lo).to(torch.float64)
+    value = torch.where(use_hi, objective_hi, objective_lo)
+    return z, value
+
+
+def _power_block_metrics_numpy(base_cost, selected_dists, z, reweight_lambda):
+    """Return restricted block objective, adjusted base, and gradient norm."""
+    base_cost = np.asarray(base_cost, dtype=np.float64)
+    selected_dists = np.asarray(selected_dists, dtype=np.float64)
+    z = np.asarray(z, dtype=np.float64)
+    adjusted = selected_dists + z[:, np.newaxis]
+    new_argmin = adjusted.argmin(axis=0)
+    new_min = adjusted[new_argmin, np.arange(adjusted.shape[1])]
+    captured = new_min < base_cost
+    current_base = np.minimum(base_cost, new_min)
+    objective = (
+        np.dot(z, z) / (4.0 * float(reweight_lambda))
+        + np.maximum(base_cost - new_min, 0.0).mean(dtype=np.float64)
+    )
+    counts = np.bincount(
+        new_argmin[captured], minlength=len(z)
+    ).astype(np.float64)
+    gradient = z / (2.0 * float(reweight_lambda)) - counts / len(base_cost)
+    return (
+        float(objective),
+        current_base.astype(np.float32, copy=False),
+        float(np.max(np.abs(gradient), initial=0.0)),
+    )
+
+
+def _power_block_metrics_torch(base_cost, selected_dists, z, reweight_lambda):
+    """CUDA restricted block objective, adjusted base, and gradient norm."""
+    import torch
+
+    base64 = base_cost.to(torch.float64)
+    dists64 = selected_dists.to(torch.float64)
+    z64 = z.to(torch.float64)
+    adjusted = dists64 + z64.unsqueeze(1)
+    new_min, new_argmin = adjusted.min(dim=0)
+    captured = new_min < base64
+    current_base = torch.minimum(base64, new_min)
+    objective = (
+        torch.dot(z64, z64) / (4.0 * float(reweight_lambda))
+        + torch.clamp(base64 - new_min, min=0.0).mean()
+    )
+    counts = torch.zeros(len(z64), dtype=torch.float64, device=z64.device)
+    if torch.any(captured):
+        counts.scatter_add_(
+            0,
+            new_argmin[captured],
+            torch.ones_like(new_argmin[captured], dtype=torch.float64),
+        )
+    gradient = z64 / (2.0 * float(reweight_lambda)) - counts / len(base64)
+    return (
+        float(objective.item()),
+        current_base.to(torch.float32),
+        float(torch.max(torch.abs(gradient)).item()),
+    )
+
+
+def _correct_power_block_numpy(
+    base_cost,
+    selected_dists,
+    z_init,
+    reweight_lambda,
+    *,
+    coordinate_steps=32,
+    max_sweeps=128,
+    dual_relative_tol=1e-8,
+    z_relative_tol=1e-6,
+    patience=2,
+):
+    """Cyclically correct only the query-batch coordinates on CPU."""
+    base64 = np.asarray(base_cost, dtype=np.float64)
+    dists64 = np.asarray(selected_dists, dtype=np.float64)
+    z = np.asarray(z_init, dtype=np.float64).copy()
+    if dists64.ndim != 2 or dists64.shape != (len(z), len(base64)):
+        raise ValueError("selected_dists, z_init, and base_cost shapes do not align")
+
+    objective, current_base, grad_inf = _power_block_metrics_numpy(
+        base64, dists64, z, reweight_lambda
+    )
+    if not np.isfinite(objective):
+        raise FloatingPointError("non-finite initial block objective")
+    best_z = z.copy()
+    best_objective = objective
+    history = [float(objective)]
+    stable_streak = 0
+    last_relative_improvement = None
+    last_z_relative_change = None
+    stop_reason = "max_sweeps_not_converged"
+
+    for sweep in range(1, int(max_sweeps) + 1):
+        previous_z = z.copy()
+        previous_objective = objective
+        for coordinate in range(len(z)):
+            adjusted = dists64 + z[:, np.newaxis]
+            adjusted[coordinate] = np.inf
+            baseline_without = np.minimum(base64, adjusted.min(axis=0))
+            residual = baseline_without - dists64[coordinate]
+            coordinate_z, _ = _restricted_coordinate_numpy(
+                residual, reweight_lambda, steps=coordinate_steps
+            )
+            z[coordinate] = coordinate_z[0]
+
+        objective, current_base, grad_inf = _power_block_metrics_numpy(
+            base64, dists64, z, reweight_lambda
+        )
+        if not np.isfinite(objective) or not np.all(np.isfinite(z)):
+            raise FloatingPointError("non-finite block-correction iterate")
+        allowed_increase = 1e-9 * max(1.0, abs(previous_objective))
+        if objective > previous_objective + allowed_increase:
+            raise FloatingPointError(
+                "block correction objective increased beyond numerical tolerance"
+            )
+        if objective > previous_objective:
+            z = previous_z
+            objective, current_base, grad_inf = _power_block_metrics_numpy(
+                base64, dists64, z, reweight_lambda
+            )
+        if objective < best_objective:
+            best_objective = objective
+            best_z = z.copy()
+
+        improvement = previous_objective - objective
+        scale = max(abs(previous_objective), abs(objective), 1e-12)
+        last_relative_improvement = max(improvement, 0.0) / scale
+        z_scale = max(
+            1.0,
+            float(np.max(np.abs(previous_z), initial=0.0)),
+            float(np.max(np.abs(z), initial=0.0)),
+        )
+        last_z_relative_change = float(
+            np.max(np.abs(z - previous_z), initial=0.0) / z_scale
+        )
+        history.append(float(objective))
+        stable = (
+            improvement >= -allowed_increase
+            and last_relative_improvement <= float(dual_relative_tol)
+            and last_z_relative_change <= float(z_relative_tol)
+        )
+        stable_streak = stable_streak + 1 if stable else 0
+        if stable_streak >= int(patience):
+            stop_reason = "corrective_stability"
+            break
+
+    sweeps = len(history) - 1
+    if stop_reason == "max_sweeps_not_converged":
+        z = best_z
+        objective, current_base, grad_inf = _power_block_metrics_numpy(
+            base64, dists64, z, reweight_lambda
+        )
+    return z, current_base, {
+        "sweeps": int(sweeps),
+        "stop_reason": stop_reason,
+        "converged": bool(stop_reason == "corrective_stability"),
+        "block_restricted_dual_drop": float(objective),
+        "relative_improvement": (
+            None if last_relative_improvement is None
+            else float(last_relative_improvement)
+        ),
+        "z_relative_change": (
+            None if last_z_relative_change is None
+            else float(last_z_relative_change)
+        ),
+        "grad_inf": float(grad_inf),
+        "objective_history": history,
+    }
+
+
+def _correct_power_block_torch(
+    base_cost,
+    selected_dists,
+    z_init,
+    reweight_lambda,
+    *,
+    coordinate_steps=32,
+    max_sweeps=128,
+    dual_relative_tol=1e-8,
+    z_relative_tol=1e-6,
+    patience=2,
+):
+    """CUDA cyclic correction of query-batch coordinates."""
+    import torch
+
+    base64 = base_cost.to(torch.float64)
+    dists64 = selected_dists.to(torch.float64)
+    z = z_init.to(torch.float64).clone()
+    if dists64.ndim != 2 or tuple(dists64.shape) != (len(z), len(base64)):
+        raise ValueError("selected_dists, z_init, and base_cost shapes do not align")
+
+    objective, current_base, grad_inf = _power_block_metrics_torch(
+        base64, dists64, z, reweight_lambda
+    )
+    if not np.isfinite(objective):
+        raise FloatingPointError("non-finite initial block objective")
+    best_z = z.clone()
+    best_objective = objective
+    history = [float(objective)]
+    stable_streak = 0
+    last_relative_improvement = None
+    last_z_relative_change = None
+    stop_reason = "max_sweeps_not_converged"
+
+    for sweep in range(1, int(max_sweeps) + 1):
+        previous_z = z.clone()
+        previous_objective = objective
+        for coordinate in range(len(z)):
+            adjusted = dists64 + z.unsqueeze(1)
+            adjusted[coordinate] = float("inf")
+            baseline_without = torch.minimum(base64, adjusted.min(dim=0).values)
+            residual = baseline_without - dists64[coordinate]
+            coordinate_z, _ = _restricted_coordinate_torch(
+                residual, reweight_lambda, steps=coordinate_steps
+            )
+            z[coordinate] = coordinate_z[0]
+
+        objective, current_base, grad_inf = _power_block_metrics_torch(
+            base64, dists64, z, reweight_lambda
+        )
+        if not np.isfinite(objective) or not torch.all(torch.isfinite(z)).item():
+            raise FloatingPointError("non-finite block-correction iterate")
+        allowed_increase = 1e-9 * max(1.0, abs(previous_objective))
+        if objective > previous_objective + allowed_increase:
+            raise FloatingPointError(
+                "block correction objective increased beyond numerical tolerance"
+            )
+        if objective > previous_objective:
+            z = previous_z
+            objective, current_base, grad_inf = _power_block_metrics_torch(
+                base64, dists64, z, reweight_lambda
+            )
+        if objective < best_objective:
+            best_objective = objective
+            best_z = z.clone()
+
+        improvement = previous_objective - objective
+        scale = max(abs(previous_objective), abs(objective), 1e-12)
+        last_relative_improvement = max(improvement, 0.0) / scale
+        z_scale = max(
+            1.0,
+            float(torch.max(torch.abs(previous_z)).item()),
+            float(torch.max(torch.abs(z)).item()),
+        )
+        last_z_relative_change = float(
+            torch.max(torch.abs(z - previous_z)).item() / z_scale
+        )
+        history.append(float(objective))
+        stable = (
+            improvement >= -allowed_increase
+            and last_relative_improvement <= float(dual_relative_tol)
+            and last_z_relative_change <= float(z_relative_tol)
+        )
+        stable_streak = stable_streak + 1 if stable else 0
+        if stable_streak >= int(patience):
+            stop_reason = "corrective_stability"
+            break
+
+    sweeps = len(history) - 1
+    if stop_reason == "max_sweeps_not_converged":
+        z = best_z
+        objective, current_base, grad_inf = _power_block_metrics_torch(
+            base64, dists64, z, reweight_lambda
+        )
+    return z, current_base, {
+        "sweeps": int(sweeps),
+        "stop_reason": stop_reason,
+        "converged": bool(stop_reason == "corrective_stability"),
+        "block_restricted_dual_drop": float(objective),
+        "relative_improvement": (
+            None if last_relative_improvement is None
+            else float(last_relative_improvement)
+        ),
+        "z_relative_change": (
+            None if last_z_relative_change is None
+            else float(last_z_relative_change)
+        ),
+        "grad_inf": float(grad_inf),
+        "objective_history": history,
+    }
+
+
+def _wasserstein_l2_coupling_numpy(
+    candidates,
+    target,
+    base_cost,
+    n_pick,
+    reweight_lambda,
+    *,
+    coordinate_steps=32,
+    corrective_max_sweeps=128,
+    corrective_dual_relative_tol=1e-8,
+    corrective_z_relative_tol=1e-6,
+    corrective_patience=2,
+    candidate_chunk_size=None,
+):
+    """CPU power-cell restricted-dual greedy coupling (version 3)."""
+    candidates = np.asarray(candidates, dtype=np.float32)
+    target = np.asarray(target, dtype=np.float32)
+    old_base = np.asarray(base_cost, dtype=np.float32)
+    if candidates.ndim != 2 or target.ndim != 2:
+        raise ValueError("candidates and target must be two-dimensional")
+    if candidates.shape[1] != target.shape[1] or len(old_base) != len(target):
+        raise ValueError("candidate, target, and power-base shapes do not align")
+    if candidate_chunk_size is None:
+        target_bytes = 256 * 1024 * 1024
+        candidate_chunk_size = max(
+            1,
+            min(
+                len(candidates),
+                target_bytes // max(len(target) * 4 * 3, 1),
+            ),
+        )
+    if candidate_chunk_size <= 0:
+        raise ValueError("candidate_chunk_size must be positive")
+
+    print(
+        f"  [CPU] Power-cell Wasserstein-L2 v3: candidates={len(candidates)}, "
+        f"target={len(target)}, lambda={float(reweight_lambda):g}, "
+        f"selecting={n_pick}, chunk={candidate_chunk_size}"
+    )
+    chosen = []
+    available = np.ones(len(candidates), dtype=bool)
+    selected_dists = np.empty((0, len(target)), dtype=np.float32)
+    z_block = np.empty(0, dtype=np.float64)
+    current_base = old_base.copy()
+    steps_trace = []
+
+    for step_index in range(min(int(n_pick), len(candidates))):
+        score_t0 = time.perf_counter()
+        drops = np.full(len(candidates), -np.inf, dtype=np.float64)
+        candidate_z = np.zeros(len(candidates), dtype=np.float64)
+        for start in range(0, len(candidates), candidate_chunk_size):
+            end = min(start + candidate_chunk_size, len(candidates))
+            dists = cdist(
+                candidates[start:end], target, metric="euclidean"
+            ).astype(np.float32)
+            residuals = current_base[np.newaxis, :] - dists
+            del dists
+            z_chunk, drop_chunk = _restricted_coordinate_numpy(
+                residuals, reweight_lambda, steps=coordinate_steps
+            )
+            candidate_z[start:end] = z_chunk
+            drops[start:end] = drop_chunk
+        drops[~available] = -np.inf
+        best = int(np.argmax(drops))
+        if not np.isfinite(drops[best]):
+            break
+        score_seconds = time.perf_counter() - score_t0
+
+        best_dist = cdist(
+            candidates[best:best + 1], target, metric="euclidean"
+        ).astype(np.float32)[0]
+        chosen.append(best)
+        available[best] = False
+        selected_dists = np.vstack([selected_dists, best_dist])
+        z_block = np.append(z_block, candidate_z[best])
+
+        corrective_t0 = time.perf_counter()
+        z_block, current_base, correction = _correct_power_block_numpy(
+            old_base,
+            selected_dists,
+            z_block,
+            reweight_lambda,
+            coordinate_steps=coordinate_steps,
+            max_sweeps=corrective_max_sweeps,
+            dual_relative_tol=corrective_dual_relative_tol,
+            z_relative_tol=corrective_z_relative_tol,
+            patience=corrective_patience,
+        )
+        corrective_seconds = time.perf_counter() - corrective_t0
+        step_trace = {
+            "step": int(step_index + 1),
+            "candidate_subpool_index": best,
+            "insertion_z": float(candidate_z[best]),
+            "selected_corrected_z": float(z_block[-1]),
+            "corrected_block_z": [float(value) for value in z_block],
+            "restricted_dual_drop": float(drops[best]),
+            "block_restricted_dual_drop": correction[
+                "block_restricted_dual_drop"
+            ],
+            "corrective_sweeps": correction["sweeps"],
+            "corrective_stop_reason": correction["stop_reason"],
+            "corrective_converged": correction["converged"],
+            "corrective_relative_improvement": correction[
+                "relative_improvement"
+            ],
+            "corrective_z_relative_change": correction["z_relative_change"],
+            "corrective_grad_inf": correction["grad_inf"],
+            "corrective_objective_history": correction["objective_history"],
+            "score_seconds": float(score_seconds),
+            "corrective_seconds": float(corrective_seconds),
+        }
+        steps_trace.append(step_trace)
+        print(
+            f"    [CPU] v3 step {step_index + 1}/{n_pick}: best={best}, "
+            f"restricted_drop={drops[best]:.9e}, z={candidate_z[best]:.7g}, "
+            f"block_drop={correction['block_restricted_dual_drop']:.9e}, "
+            f"correction={correction['stop_reason']}/"
+            f"{correction['sweeps']}, grad_inf={correction['grad_inf']:.3e}, "
+            f"score_time={score_seconds:.3f}s, "
+            f"correct_time={corrective_seconds:.3f}s"
+        )
+
+    return chosen, {
+        "backend": "numpy_cpu",
+        "coordinate_steps": int(coordinate_steps),
+        "corrective_max_sweeps": int(corrective_max_sweeps),
+        "corrective_dual_relative_tol": float(corrective_dual_relative_tol),
+        "corrective_z_relative_tol": float(corrective_z_relative_tol),
+        "corrective_patience": int(corrective_patience),
+        "candidate_chunk_size": int(candidate_chunk_size),
+        "steps": steps_trace,
+    }
+
+
+def _wasserstein_l2_coupling_torch(
+    candidates,
+    target,
+    base_cost,
+    n_pick,
+    reweight_lambda,
+    *,
+    coordinate_steps=32,
+    corrective_max_sweeps=128,
+    corrective_dual_relative_tol=1e-8,
+    corrective_z_relative_tol=1e-6,
+    corrective_patience=2,
+    candidate_chunk_size=None,
+):
+    """CUDA power-cell restricted-dual greedy coupling (version 3)."""
+    import torch
+
+    device = torch.device("cuda")
+    candidates_t = torch.as_tensor(
+        candidates, dtype=torch.float32, device=device
+    ).contiguous()
+    target_t = torch.as_tensor(
+        target, dtype=torch.float32, device=device
+    ).contiguous()
+    old_base = torch.as_tensor(
+        base_cost, dtype=torch.float32, device=device
+    ).contiguous()
+    if candidates_t.ndim != 2 or target_t.ndim != 2:
+        raise ValueError("candidates and target must be two-dimensional")
+    if candidates_t.shape[1] != target_t.shape[1] or len(old_base) != len(target_t):
+        raise ValueError("candidate, target, and power-base shapes do not align")
+
+    if candidate_chunk_size is None:
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        budget = min(int(free_bytes * 0.20), 1536 * 1024 * 1024)
+        candidate_chunk_size = max(
+            1,
+            min(
+                len(candidates_t),
+                budget // max(len(target_t) * 4 * 3, 1),
+            ),
+        )
+    if candidate_chunk_size <= 0:
+        raise ValueError("candidate_chunk_size must be positive")
+
+    candidate_sq = torch.sum(candidates_t ** 2, dim=1)
+    target_sq = torch.sum(target_t ** 2, dim=1)
+    print(
+        f"  [GPU] Power-cell Wasserstein-L2 v3: candidates={len(candidates_t)}, "
+        f"target={len(target_t)}, lambda={float(reweight_lambda):g}, "
+        f"selecting={n_pick}, chunk={candidate_chunk_size}"
+    )
+    torch.cuda.reset_peak_memory_stats(device)
+    chosen = []
+    available = np.ones(len(candidates_t), dtype=bool)
+    selected_dists = torch.empty(
+        (0, len(target_t)), dtype=torch.float32, device=device
+    )
+    z_block = torch.empty(0, dtype=torch.float64, device=device)
+    current_base = old_base.clone()
+    steps_trace = []
+
+    for step_index in range(min(int(n_pick), len(candidates_t))):
+        score_t0 = time.perf_counter()
+        drops = np.full(len(candidates_t), -np.inf, dtype=np.float64)
+        candidate_z = np.zeros(len(candidates_t), dtype=np.float64)
+        for start in range(0, len(candidates_t), candidate_chunk_size):
+            end = min(start + candidate_chunk_size, len(candidates_t))
+            chunk = candidates_t[start:end]
+            dists = candidate_sq[start:end].unsqueeze(1) + target_sq.unsqueeze(0)
+            dists.addmm_(chunk, target_t.T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+            residuals = current_base.unsqueeze(0) - dists
+            del dists
+            z_chunk, drop_chunk = _restricted_coordinate_torch(
+                residuals, reweight_lambda, steps=coordinate_steps
+            )
+            candidate_z[start:end] = z_chunk.cpu().numpy()
+            drops[start:end] = drop_chunk.cpu().numpy()
+            del residuals, z_chunk, drop_chunk
+        drops[~available] = -np.inf
+        best = int(np.argmax(drops))
+        if not np.isfinite(drops[best]):
+            break
+        score_seconds = time.perf_counter() - score_t0
+
+        best_dist = candidate_sq[best] + target_sq - 2.0 * torch.mv(
+            target_t, candidates_t[best]
+        )
+        best_dist.clamp_(min=0.0).sqrt_()
+        chosen.append(best)
+        available[best] = False
+        selected_dists = torch.cat([selected_dists, best_dist.unsqueeze(0)], dim=0)
+        z_block = torch.cat([
+            z_block,
+            torch.as_tensor(
+                [candidate_z[best]], dtype=torch.float64, device=device
+            ),
+        ])
+
+        corrective_t0 = time.perf_counter()
+        z_block, current_base, correction = _correct_power_block_torch(
+            old_base,
+            selected_dists,
+            z_block,
+            reweight_lambda,
+            coordinate_steps=coordinate_steps,
+            max_sweeps=corrective_max_sweeps,
+            dual_relative_tol=corrective_dual_relative_tol,
+            z_relative_tol=corrective_z_relative_tol,
+            patience=corrective_patience,
+        )
+        corrective_seconds = time.perf_counter() - corrective_t0
+        step_trace = {
+            "step": int(step_index + 1),
+            "candidate_subpool_index": best,
+            "insertion_z": float(candidate_z[best]),
+            "selected_corrected_z": float(z_block[-1].item()),
+            "corrected_block_z": [
+                float(value) for value in z_block.detach().cpu().tolist()
+            ],
+            "restricted_dual_drop": float(drops[best]),
+            "block_restricted_dual_drop": correction[
+                "block_restricted_dual_drop"
+            ],
+            "corrective_sweeps": correction["sweeps"],
+            "corrective_stop_reason": correction["stop_reason"],
+            "corrective_converged": correction["converged"],
+            "corrective_relative_improvement": correction[
+                "relative_improvement"
+            ],
+            "corrective_z_relative_change": correction["z_relative_change"],
+            "corrective_grad_inf": correction["grad_inf"],
+            "corrective_objective_history": correction["objective_history"],
+            "score_seconds": float(score_seconds),
+            "corrective_seconds": float(corrective_seconds),
+        }
+        steps_trace.append(step_trace)
+        print(
+            f"    [GPU] v3 step {step_index + 1}/{n_pick}: best={best}, "
+            f"restricted_drop={drops[best]:.9e}, z={candidate_z[best]:.7g}, "
+            f"block_drop={correction['block_restricted_dual_drop']:.9e}, "
+            f"correction={correction['stop_reason']}/"
+            f"{correction['sweeps']}, grad_inf={correction['grad_inf']:.3e}, "
+            f"score_time={score_seconds:.3f}s, "
+            f"correct_time={corrective_seconds:.3f}s"
+        )
+
+    peak_memory = int(torch.cuda.max_memory_allocated(device))
+    del candidates_t, target_t, old_base, candidate_sq, target_sq
+    del selected_dists, z_block, current_base
+    torch.cuda.empty_cache()
+    return chosen, {
+        "backend": "torch_cuda",
+        "coordinate_steps": int(coordinate_steps),
+        "corrective_max_sweeps": int(corrective_max_sweeps),
+        "corrective_dual_relative_tol": float(corrective_dual_relative_tol),
+        "corrective_z_relative_tol": float(corrective_z_relative_tol),
+        "corrective_patience": int(corrective_patience),
+        "candidate_chunk_size": int(candidate_chunk_size),
+        "peak_cuda_memory_bytes": peak_memory,
+        "steps": steps_trace,
+    }
 
 
 # ── Entropic OT Sampling ────────────────────────────────

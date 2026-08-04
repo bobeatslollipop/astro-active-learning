@@ -266,7 +266,7 @@ def main():
     parser.add_argument("--snapshot-every", type=int, default=15)
     parser.add_argument("--reweight-pool-size", type=int, default=100000)
     parser.add_argument("--reweight-lambda", type=float, default=100.0)
-    parser.add_argument("--production-max-iter", type=int, default=512)
+    parser.add_argument("--production-max-iter", type=int, default=1024)
     parser.add_argument("--relative-gap-tol", type=float, default=1e-2)
     parser.add_argument("--gradient-tol", type=float, default=1e-4)
     parser.add_argument("--stability-window", type=int, default=10)

@@ -1,0 +1,36 @@
+Voronoi-L2 100K gap/stability calibration
+{
+  "max_iter": 512,
+  "relative_gap_tol": 0.01,
+  "gradient_tol": 0.0001,
+  "stability_window": 10,
+  "dual_relative_tol": 0.0001,
+  "weight_l1_tol": 0.005,
+  "stability_patience": 2,
+  "seed": 42,
+  "trial": 0,
+  "warm_start_file": "bp_rp_lamost_normalized_low_teff_100k_seed42.h5",
+  "full_data_file": "bp_rp_lamost_normalized.h5",
+  "family_root": "results/active_learning/xgb_noclassbalance_100k_warm_fixed10k_fullheldout_reweightfull_150q_5seeds_eval30_v2",
+  "lambdas": [
+    10,
+    100,
+    1000,
+    10000
+  ],
+  "snapshots": [
+    0,
+    150
+  ],
+  "kmedian_q150": true
+}
+
+wasserstein_l2 lambda=10 q=0: class=stable_not_certified updates=85 rel_gap=0.0166493 grad_inf=0.0032628 weight_l1_window=0.004992091277614463 runtime=98.9s
+wasserstein_l2 lambda=10 q=150: class=stable_not_certified updates=90 rel_gap=0.24952 grad_inf=0.0196198 weight_l1_window=0.0008359833367395098 runtime=108.9s
+wasserstein_l2 lambda=100 q=0: class=stable_not_certified updates=370 rel_gap=0.0157036 grad_inf=0.000876608 weight_l1_window=0.004713030001198604 runtime=426.7s
+wasserstein_l2 lambda=100 q=150: class=stable_not_certified updates=173 rel_gap=0.0700204 grad_inf=0.00268847 weight_l1_window=0.0010988527891129252 runtime=197.1s
+wasserstein_l2 lambda=1000 q=0: class=max_iter_not_converged updates=512 rel_gap=0.732837 grad_inf=0.00839057 weight_l1_window=0.011396327816783014 runtime=573.9s
+wasserstein_l2 lambda=1000 q=150: class=max_iter_not_converged updates=512 rel_gap=0.721379 grad_inf=0.017429 weight_l1_window=0.003928884201968685 runtime=584.0s
+wasserstein_l2 lambda=10000 q=0: class=max_iter_not_converged updates=512 rel_gap=0.986322 grad_inf=0.0320491 weight_l1_window=0.002279837526657502 runtime=573.8s
+wasserstein_l2 lambda=10000 q=150: class=max_iter_not_converged updates=512 rel_gap=0.917906 grad_inf=0.00433012 weight_l1_window=0.0013145524217179627 runtime=570.6s
+kmedianpp lambda=100 q=150: class=stable_not_certified updates=176 rel_gap=0.035906 grad_inf=0.00237197 weight_l1_window=0.0017346604972274804 runtime=203.2s

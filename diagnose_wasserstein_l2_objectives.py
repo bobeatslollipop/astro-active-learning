@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Small-scale audit for Wasserstein-L2 query objectives.
 
-This diagnostic compares the historical captured-mass score, the production
-full-Voronoi-L2 score, and candidate-wise solves of the complete regularized
-transport objective.  It is deliberately not registered as an active-learning
-strategy: full candidate enumeration is only intended as a numerical oracle on
-small problems.
+This diagnostic compares the historical captured-mass score, ordinary
+full-Voronoi-L2 v2, production power-cell v3, and candidate-wise solves of the
+complete regularized transport objective. It is deliberately not registered as
+an active-learning strategy: full candidate enumeration is only intended as a
+numerical oracle on small problems.
 """
 
 from __future__ import annotations
@@ -25,14 +25,16 @@ from al_metadata import atomic_write_json, fast_hdf5_fingerprint
 from al_queries import (
     WASSERSTEIN_L2_IMPLEMENTATION_VERSION,
     WASSERSTEIN_L2_QUERY_OBJECTIVE,
+    _restricted_coordinate_numpy,
     _wasserstein_initial_wwds_numpy,
+    _wasserstein_l2_coupling_numpy,
     _wasserstein_l2_base_cells_numpy,
     _wasserstein_l2_full_penalties_numpy,
     _wasserstein_l2_initial_capture_counts_numpy,
 )
 
 
-ORACLE_SCHEMA_VERSION = 1
+ORACLE_SCHEMA_VERSION = 2
 LEGACY_OBJECTIVE = "wwd_plus_candidate_captured_mass_l2"
 
 
@@ -190,6 +192,7 @@ def solve_regularized_ot_objective(
             "message": str(dual_result.message),
             "iterations": int(getattr(dual_result, "nit", 0)),
         },
+        "dual_z": np.asarray(best_z, dtype=np.float64).tolist(),
     }
 
 
@@ -292,7 +295,7 @@ def compare_objectives(
     max_iter=2000,
     tolerance=1e-12,
 ):
-    """Compare v1, v2, and the exact oracle along a certified exact path."""
+    """Compare v1, v2, v3, and the exact oracle along a certified path."""
     target = np.asarray(target, dtype=np.float64)
     support = np.asarray(initial_support, dtype=np.float64).copy()
     if len(target) == 0 or len(support) == 0:
@@ -301,6 +304,32 @@ def compare_objectives(
     steps = []
     candidate_rows = []
     total_t0 = time.perf_counter()
+    initial_support_copy = support.copy()
+
+    initial_solve = solve_regularized_ot_objective(
+        target,
+        initial_support_copy,
+        reweight_lambda,
+        max_iter=max_iter,
+        tolerance=tolerance,
+    )
+    initial_z = np.asarray(initial_solve["dual_z"], dtype=np.float64)
+    initial_base = np.min(
+        cdist(target, initial_support_copy) + initial_z[np.newaxis, :], axis=1
+    )
+    production_plan, production_trace = _wasserstein_l2_coupling_numpy(
+        target,
+        target,
+        initial_base,
+        n_pick,
+        reweight_lambda,
+        coordinate_steps=48,
+        corrective_max_sweeps=256,
+        corrective_dual_relative_tol=1e-10,
+        corrective_z_relative_tol=1e-9,
+        corrective_patience=2,
+        candidate_chunk_size=max(1, min(len(target), 16)),
+    )
 
     for step_index in range(min(int(n_pick), len(target))):
         transport, legacy_scores, full_scores, full_penalties = _heuristic_scores(
@@ -312,6 +341,26 @@ def compare_objectives(
         full_masked[~available] = np.inf
         legacy_choice = int(np.argmin(legacy_masked))
         full_choice = int(np.argmin(full_masked))
+        old_solve = solve_regularized_ot_objective(
+            target,
+            support,
+            reweight_lambda,
+            max_iter=max_iter,
+            tolerance=tolerance,
+        )
+        old_z = np.asarray(old_solve["dual_z"], dtype=np.float64)
+        power_base = np.min(
+            cdist(target, support) + old_z[np.newaxis, :], axis=1
+        )
+        candidate_dists = cdist(target, target)
+        power_z, power_drops = _restricted_coordinate_numpy(
+            power_base[np.newaxis, :] - candidate_dists,
+            reweight_lambda,
+            steps=48,
+        )
+        power_masked = power_drops.copy()
+        power_masked[~available] = -np.inf
+        power_choice = int(np.argmax(power_masked))
 
         exact_records = []
         for candidate_index in np.flatnonzero(available):
@@ -331,6 +380,10 @@ def compare_objectives(
                 "legacy_score": float(legacy_scores[candidate_index]),
                 "full_voronoi_score": float(full_scores[candidate_index]),
                 "full_voronoi_mass_penalty": float(full_penalties[candidate_index]),
+                "power_v3_insertion_z": float(power_z[candidate_index]),
+                "power_v3_restricted_dual_drop": float(
+                    power_drops[candidate_index]
+                ),
                 "solve_seconds": float(time.perf_counter() - solve_t0),
             })
             exact_records.append(record)
@@ -343,6 +396,7 @@ def compare_objectives(
             "available_candidates": int(available.sum()),
             "legacy_choice": legacy_choice,
             "full_voronoi_choice": full_choice,
+            "power_v3_choice": power_choice,
             "exact_decision": exact_decision,
         }
         if exact_decision["status"] != "certified":
@@ -357,11 +411,15 @@ def compare_objectives(
             "exact_choice": exact_choice,
             "legacy_matches_exact": bool(legacy_choice == exact_choice),
             "full_voronoi_matches_exact": bool(full_choice == exact_choice),
+            "power_v3_matches_exact": bool(power_choice == exact_choice),
             "legacy_regret_interval": _regret_interval(
                 records_by_index, legacy_choice, exact_choice
             ),
             "full_voronoi_regret_interval": _regret_interval(
                 records_by_index, full_choice, exact_choice
+            ),
+            "power_v3_regret_interval": _regret_interval(
+                records_by_index, power_choice, exact_choice
             ),
         })
         steps.append(step_record)
@@ -371,6 +429,8 @@ def compare_objectives(
     return {
         "steps": steps,
         "candidate_records": candidate_rows,
+        "production_v3_batch_plan": [int(index) for index in production_plan],
+        "production_v3_batch_trace": production_trace,
         "certified_steps": int(sum(
             step["exact_decision"]["status"] == "certified" for step in steps
         )),
@@ -387,6 +447,7 @@ def _write_csv(path, rows):
     columns = [
         "step", "candidate_index", "transport_score", "legacy_score",
         "full_voronoi_score", "full_voronoi_mass_penalty",
+        "power_v3_insertion_z", "power_v3_restricted_dual_drop",
         "primal_upper_bound", "dual_lower_bound", "primal_dual_gap",
         "certificate_valid", "solve_seconds",
     ]
@@ -412,6 +473,7 @@ def _write_summary(path, payload):
         lines.append(
             f"step {step['step']}: legacy={step['legacy_choice']}, "
             f"full_voronoi={step['full_voronoi_choice']}, "
+            f"power_v3={step['power_v3_choice']}, "
             f"exact={decision.get('candidate_index')}, status={decision['status']}"
         )
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -33,6 +33,7 @@ from al_metadata import (
 )
 from al_queries import (
     STRATEGIES,
+    WASSERSTEIN_L2_DUAL_UPDATE,
     WASSERSTEIN_L2_IMPLEMENTATION_VERSION,
     WASSERSTEIN_L2_QUERY_OBJECTIVE,
 )
@@ -86,6 +87,8 @@ def run_active_learning(args):
             raise ValueError("--strategy wasserstein_l2 requires --reweight-lambda > 0.")
         args.query_objective = WASSERSTEIN_L2_QUERY_OBJECTIVE
         args.query_implementation_version = WASSERSTEIN_L2_IMPLEMENTATION_VERSION
+        args.query_dual_update = WASSERSTEIN_L2_DUAL_UPDATE
+        args.query_target_source = "reweight_target"
 
     os.makedirs(args.out_dir, exist_ok=True)
     t0 = time.perf_counter()
@@ -627,14 +630,36 @@ def run_active_learning(args):
             query_t0 = time.perf_counter()
 
             if args.strategy in ("wasserstein", "wasserstein_l2"):
-                pool_idx = strategy_fn(X_pool, clf, batch, query_rng,
-                                       X_labeled=X_labeled[:n_labeled],
-                                       state=strategy_state,
-                                       pool_size=args.wass_pool_size,
-                                       plan_size=args.wass_plan_size,
-                                       available_mask=available,
-                                       reweight_lambda=args.reweight_lambda,
-                                       temperature=args.eot_temperature)
+                query_kwargs = {
+                    "X_labeled": X_labeled[:n_labeled],
+                    "state": strategy_state,
+                    "pool_size": args.wass_pool_size,
+                    "plan_size": args.wass_plan_size,
+                    "available_mask": available,
+                    "reweight_lambda": args.reweight_lambda,
+                    "temperature": args.eot_temperature,
+                }
+                if args.strategy == "wasserstein_l2":
+                    query_kwargs.update({
+                        "reweight_target": X_reweight_pool,
+                        "voronoi_l2_state": voronoi_l2_state,
+                        "coordinate_steps": args.wasserstein_l2_coordinate_steps,
+                        "corrective_max_sweeps": (
+                            args.wasserstein_l2_corrective_max_sweeps
+                        ),
+                        "corrective_dual_relative_tol": (
+                            args.wasserstein_l2_corrective_dual_relative_tol
+                        ),
+                        "corrective_z_relative_tol": (
+                            args.wasserstein_l2_corrective_z_relative_tol
+                        ),
+                        "corrective_patience": (
+                            args.wasserstein_l2_corrective_patience
+                        ),
+                    })
+                pool_idx = strategy_fn(
+                    X_pool, clf, batch, query_rng, **query_kwargs
+                )
             else:
                 avail_idx = np.where(available)[0]
                 sel = strategy_fn(X_pool[avail_idx], clf, batch, query_rng,
@@ -664,13 +689,18 @@ def run_active_learning(args):
             trial_query_labels.extend(label_list)
             if source_id_list is not None:
                 trial_query_source_ids.extend(source_id_list)
-            trial_query_batches.append({
+            query_batch_record = {
                 "n_queries_before": int(query_start),
                 "n_queries_after": int(query_start + n_new),
                 "pool_indices": pool_idx_list,
                 "source_ids": source_id_list,
                 "labels": label_list,
-            })
+            }
+            if args.strategy == "wasserstein_l2":
+                query_batch_record["query_diagnostics"] = strategy_state[
+                    "last_plan_trace"
+                ]
+            trial_query_batches.append(query_batch_record)
 
             X_labeled[n_labeled:n_labeled + n_new] = X_pool[pool_idx]
             y_labeled[n_labeled:n_labeled + n_new] = y_pool[pool_idx]
@@ -765,6 +795,7 @@ def run_active_learning(args):
     print(f"\nTotal runtime ({args.n_trials} trial(s)): {t_total:.1f}s")
 
     query_plan_data = {
+        "schema_version": 2,
         "strategy": args.strategy,
         "query_rng_mode": args.query_rng_mode,
         "seed": int(args.seed),
@@ -777,6 +808,8 @@ def run_active_learning(args):
         query_plan_data.update({
             "query_objective": args.query_objective,
             "query_implementation_version": int(args.query_implementation_version),
+            "query_dual_update": args.query_dual_update,
+            "query_target_source": args.query_target_source,
         })
     with open(os.path.join(args.out_dir, "query_plan_trials.json"), "w") as f:
         json.dump(query_plan_data, f, indent=2)

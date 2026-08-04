@@ -25,6 +25,7 @@ from al_metadata import (
     write_params,
 )
 from al_queries import (
+    WASSERSTEIN_L2_DUAL_UPDATE,
     WASSERSTEIN_L2_IMPLEMENTATION_VERSION,
     WASSERSTEIN_L2_QUERY_OBJECTIVE,
 )
@@ -65,9 +66,14 @@ def active_args(warm_path, full_path, out_dir):
         "wass_plan_size": 2,
         "eot_temperature": 1.0,
         "moment_ridge": 1.0,
+        "wasserstein_l2_coordinate_steps": 32,
+        "wasserstein_l2_corrective_max_sweeps": 128,
+        "wasserstein_l2_corrective_dual_relative_tol": 1e-8,
+        "wasserstein_l2_corrective_z_relative_tol": 1e-6,
+        "wasserstein_l2_corrective_patience": 2,
         "reweighting": "voronoi_l2",
         "reweight_lambda": 100.0,
-        "voronoi_l2_max_iter": 512,
+        "voronoi_l2_max_iter": 1024,
         "voronoi_l2_relative_gap_tol": 1e-2,
         "voronoi_l2_gradient_tol": 1e-4,
         "voronoi_l2_stability_window": 10,
@@ -204,6 +210,8 @@ class MetadataTests(unittest.TestCase):
             wasserstein_args.query_implementation_version = (
                 WASSERSTEIN_L2_IMPLEMENTATION_VERSION
             )
+            wasserstein_args.query_dual_update = WASSERSTEIN_L2_DUAL_UPDATE
+            wasserstein_args.query_target_source = "reweight_target"
             wasserstein = build_active_params(
                 wasserstein_args, y_warm=y_warm, y_pool=y_pool, y_eval=y_eval,
                 data_load_seconds=0.1,
@@ -213,9 +221,9 @@ class MetadataTests(unittest.TestCase):
                 WASSERSTEIN_L2_QUERY_OBJECTIVE,
             )
             self.assertEqual(
-                wasserstein["query"]["query_implementation_version"], 2
+                wasserstein["query"]["query_implementation_version"], 3
             )
-            wasserstein_args.query_implementation_version = 3
+            wasserstein_args.query_implementation_version = 4
             changed_implementation = build_active_params(
                 wasserstein_args, y_warm=y_warm, y_pool=y_pool, y_eval=y_eval,
                 data_load_seconds=0.1,

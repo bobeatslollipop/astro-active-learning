@@ -11,6 +11,7 @@ from al_reweighting import (
     _voronoi_l2_primal_dual_metrics,
     _voronoi_l2_weights_numpy,
     _voronoi_l2_weights_torch,
+    ensure_voronoi_l2_power_state,
 )
 
 
@@ -146,7 +147,7 @@ class VoronoiL2CertificateTests(unittest.TestCase):
     def test_stability_stop_has_explicit_noncertified_class(self):
         recorder = _VoronoiL2TraceRecorder(
             backend="test",
-            max_iter=512,
+            max_iter=1024,
             relative_gap_tol=1e-2,
             gradient_tol=1e-4,
             stability_window=1,
@@ -203,7 +204,7 @@ class VoronoiL2NumpyBackendTests(unittest.TestCase):
             self.X_labeled,
             reweight_lambda=0.2,
             state=state,
-            max_iter=512,
+            max_iter=1024,
             trace_context={"trial": 1, "seed": 42, "n_queries": 0, "solve": 1},
             trace_logger=lines.append,
             **self.solver_kwargs(),
@@ -266,6 +267,54 @@ class VoronoiL2NumpyBackendTests(unittest.TestCase):
 
         trace = state["last_optimizer_trace"]
         self.assertEqual(cdist_mock.call_count, trace["function_evaluations"])
+
+    def test_power_baseline_is_aligned_and_stale_cache_is_rebuilt(self):
+        state = {}
+        _voronoi_l2_weights_numpy(
+            self.X_pool,
+            self.X_labeled,
+            reweight_lambda=0.2,
+            state=state,
+            max_iter=3,
+            trace_logger=lambda _line: None,
+            **self.solver_kwargs(
+                relative_gap_tol=0.0,
+                gradient_tol=0.0,
+                stability_window=10,
+            ),
+        )
+        power = state["power_diagram"]
+        expected = np.min(
+            cdist(self.X_pool, self.X_labeled)
+            + state["z"][np.newaxis, :],
+            axis=1,
+        )
+        np.testing.assert_allclose(power["base_cost"], expected, rtol=1e-6)
+        generation = power["generation"]
+
+        cached = ensure_voronoi_l2_power_state(
+            self.X_pool, self.X_labeled, 0.2, state
+        )
+        self.assertEqual(cached["generation"], generation)
+        state["power_diagram"]["target_array_id"] = -1
+        rebuilt = ensure_voronoi_l2_power_state(
+            self.X_pool, self.X_labeled, 0.2, state
+        )
+        self.assertGreater(rebuilt["generation"], generation)
+        np.testing.assert_allclose(rebuilt["base_cost"], expected, rtol=1e-6)
+
+    def test_power_state_rejects_missing_or_misaligned_dual(self):
+        with self.assertRaisesRegex(ValueError, "requires dual variables"):
+            ensure_voronoi_l2_power_state(
+                self.X_pool, self.X_labeled, 0.2, {}
+            )
+        with self.assertRaisesRegex(ValueError, "dual/support mismatch"):
+            ensure_voronoi_l2_power_state(
+                self.X_pool,
+                self.X_labeled,
+                0.2,
+                {"z": np.array([0.1])},
+            )
 
 
 class VoronoiL2TorchBackendTests(unittest.TestCase):

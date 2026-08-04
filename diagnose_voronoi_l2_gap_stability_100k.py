@@ -166,7 +166,7 @@ def main():
     parser.add_argument("--reweight-pool-size", type=int, default=100000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--trial", type=int, default=0)
-    parser.add_argument("--max-iter", type=int, default=512)
+    parser.add_argument("--max-iter", type=int, default=1024)
     parser.add_argument("--relative-gap-tol", type=float, default=1e-2)
     parser.add_argument("--gradient-tol", type=float, default=1e-4)
     parser.add_argument("--stability-window", type=int, default=10)

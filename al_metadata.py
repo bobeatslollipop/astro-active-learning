@@ -44,6 +44,13 @@ ACTIVE_INPUT_SECTIONS = {
         "moment_ridge",
         "query_objective",
         "query_implementation_version",
+        "query_dual_update",
+        "query_target_source",
+        "wasserstein_l2_coordinate_steps",
+        "wasserstein_l2_corrective_max_sweeps",
+        "wasserstein_l2_corrective_dual_relative_tol",
+        "wasserstein_l2_corrective_z_relative_tol",
+        "wasserstein_l2_corrective_patience",
     ),
     "reweighting": (
         "reweighting",

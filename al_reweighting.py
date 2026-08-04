@@ -4,6 +4,161 @@ import numpy as np
 from scipy.spatial.distance import cdist
 
 
+def _voronoi_l2_power_cache_matches(
+    cache, X_pool, X_labeled, z, reweight_lambda
+):
+    """Return whether an in-memory power baseline matches the current solve."""
+    if not isinstance(cache, dict):
+        return False
+    z = np.asarray(z)
+    return (
+        cache.get("target_array_id") == id(X_pool)
+        and tuple(cache.get("target_shape", ())) == tuple(X_pool.shape)
+        and cache.get("target_dtype") == str(X_pool.dtype)
+        and cache.get("support_size") == len(X_labeled)
+        and cache.get("feature_count") == X_labeled.shape[1]
+        and cache.get("reweight_lambda") == float(reweight_lambda)
+        and isinstance(cache.get("z"), np.ndarray)
+        and np.array_equal(cache["z"], z)
+        and isinstance(cache.get("base_cost"), np.ndarray)
+        and cache["base_cost"].shape == (len(X_pool),)
+    )
+
+
+def _store_voronoi_l2_power_state(
+    state, X_pool, X_labeled, z, reweight_lambda, base_cost
+):
+    """Store the fixed-old-dual power baseline used by Wasserstein-L2 v3."""
+    generation = int(state.get("power_diagram_generation", 0)) + 1
+    state["power_diagram_generation"] = generation
+    state["power_diagram"] = {
+        "generation": generation,
+        "target_array_id": id(X_pool),
+        "target_shape": tuple(X_pool.shape),
+        "target_dtype": str(X_pool.dtype),
+        "support_size": int(len(X_labeled)),
+        "feature_count": int(X_labeled.shape[1]),
+        "reweight_lambda": float(reweight_lambda),
+        "z": np.asarray(z).copy(),
+        "base_cost": np.asarray(base_cost, dtype=np.float32).copy(),
+    }
+    return state["power_diagram"]
+
+
+def _voronoi_l2_adjusted_min_numpy(X_pool, X_labeled, z):
+    """Compute min_i ||x-s_i|| + z_i on CPU without a full distance matrix."""
+    n_pool = len(X_pool)
+    n_labeled = len(X_labeled)
+    max_elements = 50_000_000
+    chunk_size = max(1, max_elements // max(n_labeled, 1))
+    base_cost = np.empty(n_pool, dtype=np.float32)
+    z64 = np.asarray(z, dtype=np.float64)
+    for start in range(0, n_pool, chunk_size):
+        end = min(start + chunk_size, n_pool)
+        dists = cdist(X_pool[start:end], X_labeled, metric="euclidean")
+        dists += z64[np.newaxis, :]
+        base_cost[start:end] = dists.min(axis=1).astype(np.float32, copy=False)
+    return base_cost
+
+
+def _voronoi_l2_adjusted_min_torch(
+    X_pool, X_labeled, z, state=None
+):
+    """Compute min_i ||x-s_i|| + z_i on CUDA in bounded target chunks."""
+    import torch
+
+    device = torch.device("cuda")
+    pool_cache_id = (id(X_pool), X_pool.shape, str(X_pool.dtype))
+    if (
+        state is not None
+        and state.get("pool_cache_id") == pool_cache_id
+        and "X_pool_t" in state
+        and "X_pool_sq" in state
+    ):
+        X_pool_t = state["X_pool_t"]
+        X_pool_sq = state["X_pool_sq"]
+    else:
+        X_pool_t = torch.as_tensor(
+            X_pool, dtype=torch.float32, device=device
+        ).contiguous()
+        X_pool_sq = torch.sum(X_pool_t ** 2, dim=1)
+
+    X_labeled_t = torch.as_tensor(
+        X_labeled, dtype=torch.float32, device=device
+    ).contiguous()
+    X_labeled_sq = torch.sum(X_labeled_t ** 2, dim=1)
+    z_t = torch.as_tensor(z, dtype=torch.float32, device=device)
+    chunk_size = _distance_chunk_size_torch(
+        len(X_pool_t), len(X_labeled_t), device
+    )
+    base_cost = torch.empty(len(X_pool_t), dtype=torch.float32, device=device)
+    with torch.no_grad():
+        for start in range(0, len(X_pool_t), chunk_size):
+            end = min(start + chunk_size, len(X_pool_t))
+            chunk = X_pool_t[start:end]
+            dists = X_pool_sq[start:end].unsqueeze(1) + X_labeled_sq.unsqueeze(0)
+            dists.addmm_(chunk, X_labeled_t.T, beta=1.0, alpha=-2.0)
+            dists.clamp_(min=0.0).sqrt_()
+            dists.add_(z_t.unsqueeze(0))
+            base_cost[start:end] = dists.min(dim=1).values
+    result = base_cost.cpu().numpy()
+    del X_labeled_t, X_labeled_sq, z_t, base_cost
+    return result
+
+
+def ensure_voronoi_l2_power_state(
+    X_pool, X_labeled, reweight_lambda, state
+):
+    """Return an aligned power baseline, recomputing it when only the cache is stale.
+
+    A missing dual or a support/dual size mismatch is a hard error.  A stale
+    adjusted-cost cache is recoverable because it can be deterministically
+    rebuilt from the target, support, and current dual variables.
+    """
+    if state is None or "z" not in state:
+        raise ValueError(
+            "wasserstein_l2 v3 requires dual variables from a completed "
+            "voronoi_l2 reweighting solve."
+        )
+    X_pool = np.asarray(X_pool)
+    X_labeled = np.asarray(X_labeled)
+    z = np.asarray(state["z"])
+    if X_pool.ndim != 2 or X_labeled.ndim != 2:
+        raise ValueError("reweight target and labeled support must be 2D arrays")
+    if len(X_pool) == 0 or len(X_labeled) == 0:
+        raise ValueError("reweight target and labeled support must be non-empty")
+    if X_pool.shape[1] != X_labeled.shape[1]:
+        raise ValueError("reweight target and support feature dimensions must match")
+    if len(z) != len(X_labeled):
+        raise ValueError(
+            "wasserstein_l2 v3 dual/support mismatch: "
+            f"len(z)={len(z)} but support_size={len(X_labeled)}."
+        )
+    if float(reweight_lambda) <= 0:
+        raise ValueError("reweight_lambda must be positive")
+
+    cache = state.get("power_diagram")
+    if _voronoi_l2_power_cache_matches(
+        cache, X_pool, X_labeled, z, reweight_lambda
+    ):
+        return cache
+
+    try:
+        import torch
+        use_cuda = torch.cuda.is_available()
+    except ImportError:
+        use_cuda = False
+    if use_cuda:
+        base_cost = _voronoi_l2_adjusted_min_torch(
+            X_pool, X_labeled, z, state=state
+        )
+    else:
+        base_cost = _voronoi_l2_adjusted_min_numpy(X_pool, X_labeled, z)
+    return _store_voronoi_l2_power_state(
+        state, X_pool, X_labeled, z, reweight_lambda, base_cost
+    )
+
+
 def compute_voronoi_weights(X_pool, X_labeled, voronoi_state=None):
     """Compute optimal sample weights for labeled points that minimise
     W_2(Uniform(pool), Weighted(labeled)).
@@ -788,7 +943,7 @@ def compute_voronoi_l2_weights(
     X_labeled,
     reweight_lambda=1.0,
     state=None,
-    max_iter=512,
+    max_iter=1024,
     relative_gap_tol=1e-2,
     gradient_tol=1e-4,
     stability_window=10,
@@ -850,7 +1005,7 @@ def _voronoi_l2_weights_torch(
     X_labeled,
     reweight_lambda,
     state,
-    max_iter=512,
+    max_iter=1024,
     relative_gap_tol=1e-2,
     gradient_tol=1e-4,
     stability_window=10,
@@ -877,6 +1032,9 @@ def _voronoi_l2_weights_torch(
 
             total_min_sum = 0.0
             counts = torch.zeros(n_labeled, dtype=torch.float32, device=device)
+            power_base_cost = torch.empty(
+                n_pool, dtype=torch.float32, device=device
+            )
 
             with torch.no_grad():
                 for start_p in range(0, n_pool, chunk_size):
@@ -890,6 +1048,7 @@ def _voronoi_l2_weights_torch(
 
                     dists.add_(z.unsqueeze(0))
                     min_vals, argmin_idx = torch.min(dists, dim=1)
+                    power_base_cost[start_p:end_p] = min_vals
 
                     total_min_sum += min_vals.sum()
 
@@ -930,6 +1089,7 @@ def _voronoi_l2_weights_torch(
                 "grad_inf": float(torch.max(torch.abs(grad_z)).detach().cpu().item()),
                 "raw_weight_sum": float(raw_weight_sum.detach().cpu().item()),
                 "normalized_weights": normalized_weights.detach().cpu().numpy(),
+                "power_base_cost": power_base_cost.detach(),
             })
             ctx.save_for_backward(grad_z)
             return loss
@@ -999,6 +1159,8 @@ def _voronoi_l2_weights_torch(
     accepted_update = 0
     initial_recorded = False
     step_evaluations = []
+    accepted_power_base = None
+    accepted_power_z = None
 
     def closure():
         nonlocal function_evaluations, initial_recorded
@@ -1059,6 +1221,10 @@ def _voronoi_l2_weights_torch(
                 )
                 break
             accepted_update += 1
+            accepted_power_base = accepted_metrics["metrics"][
+                "power_base_cost"
+            ].cpu().numpy().copy()
+            accepted_power_z = z_after.copy()
             stop_reason = recorder.observe(
                 accepted_metrics["metrics"],
                 accepted_metrics["function_evaluation"],
@@ -1079,9 +1245,33 @@ def _voronoi_l2_weights_torch(
         z_final = z.cpu().numpy()
         w = np.maximum(z_final, 0.0) / (2.0 * reweight_lambda)
 
+    if accepted_power_z is None or not np.array_equal(accepted_power_z, z_final):
+        accepted_power_base = None
+    if accepted_power_base is None:
+        matching_evaluation = next(
+            (
+                evaluation
+                for evaluation in reversed(step_evaluations)
+                if np.array_equal(evaluation["z"], z_final)
+            ),
+            None,
+        )
+        if matching_evaluation is not None:
+            accepted_power_base = matching_evaluation["metrics"][
+                "power_base_cost"
+            ].cpu().numpy().copy()
+    if accepted_power_base is None:
+        accepted_power_base = _voronoi_l2_adjusted_min_torch(
+            X_pool, X_labeled, z_final, state=state
+        )
+
     state['z'] = z_final
     state['last_optimizer_trace'] = recorder.finish(
         stop_reason, function_evaluations, backend_message=backend_message
+    )
+    _store_voronoi_l2_power_state(
+        state, X_pool, X_labeled, z_final, reweight_lambda,
+        accepted_power_base,
     )
 
     w_sum = w.sum()
@@ -1099,7 +1289,7 @@ def _voronoi_l2_weights_numpy(
     X_labeled,
     reweight_lambda,
     state,
-    max_iter=512,
+    max_iter=1024,
     relative_gap_tol=1e-2,
     gradient_tol=1e-4,
     stability_window=10,
@@ -1153,6 +1343,7 @@ def _voronoi_l2_weights_numpy(
 
         total_min_sum = 0.0
         counts = np.zeros(n_labeled, dtype=np.float64)
+        power_base_cost = np.empty(n_pool, dtype=np.float32)
 
         for start_p in range(0, n_pool, chunk_size):
             end_p = min(start_p + chunk_size, n_pool)
@@ -1161,6 +1352,9 @@ def _voronoi_l2_weights_numpy(
 
             min_vals = D_chunk.min(axis=1)
             argmin_idx = D_chunk.argmin(axis=1)
+            power_base_cost[start_p:end_p] = min_vals.astype(
+                np.float32, copy=False
+            )
 
             total_min_sum += min_vals.sum()
             counts += np.bincount(argmin_idx, minlength=n_labeled)
@@ -1179,6 +1373,7 @@ def _voronoi_l2_weights_numpy(
             "z": np.asarray(z_val).copy(),
             "metrics": metrics,
             "function_evaluation": function_evaluations,
+            "power_base_cost": power_base_cost,
         })
         if not recorder.records:
             stop_reason = recorder.observe(
@@ -1228,6 +1423,13 @@ def _voronoi_l2_weights_numpy(
     state['z'] = z_final
     state['last_optimizer_trace'] = recorder.finish(
         stop_reason, function_evaluations, backend_message=backend_message
+    )
+    if np.array_equal(last_evaluation.get("z"), z_final):
+        base_cost = last_evaluation["power_base_cost"]
+    else:
+        base_cost = _voronoi_l2_adjusted_min_numpy(X_pool, X_labeled, z_final)
+    _store_voronoi_l2_power_state(
+        state, X_pool, X_labeled, z_final, reweight_lambda, base_cost
     )
 
     w = np.maximum(z_final, 0.0) / (2.0 * reweight_lambda)

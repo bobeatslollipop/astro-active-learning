@@ -26,13 +26,18 @@ N_TRIALS=5
 N_SNAPSHOTS=5
 SOFT_TOPK=20
 REWEIGHT_POOL=100000
-VORONOI_L2_MAX_ITER=512
+VORONOI_L2_MAX_ITER=1024
 VORONOI_L2_RELATIVE_GAP_TOL=1e-2
 VORONOI_L2_GRADIENT_TOL=1e-4
 VORONOI_L2_STABILITY_WINDOW=10
 VORONOI_L2_DUAL_RELATIVE_TOL=1e-4
 VORONOI_L2_WEIGHT_L1_TOL=5e-3
 VORONOI_L2_STABILITY_PATIENCE=2
+WASSERSTEIN_L2_COORDINATE_STEPS=32
+WASSERSTEIN_L2_CORRECTIVE_MAX_SWEEPS=128
+WASSERSTEIN_L2_CORRECTIVE_DUAL_RELATIVE_TOL=1e-8
+WASSERSTEIN_L2_CORRECTIVE_Z_RELATIVE_TOL=1e-6
+WASSERSTEIN_L2_CORRECTIVE_PATIENCE=2
 
 XGB_N_ESTIMATORS=700
 XGB_MAX_DEPTH=6
@@ -47,7 +52,7 @@ XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
 RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
-FAMILY="xgb_noclassbalance_100k_warm_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}_v2"
+FAMILY="xgb_noclassbalance_100k_warm_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}_v3"
 RESULT_ROOT="${RESULTS_ROOT}/${FAMILY}"
 
 WASS_HARD_OUT="${RESULT_ROOT}/al_xgb_wasserstein_hard_${TOTAL_QUERIES}_lambda_0"
@@ -55,6 +60,8 @@ WASS_NONE_OUT="${RESULT_ROOT}/al_xgb_wasserstein_none_${TOTAL_QUERIES}_lambda_0_
 KMED_L2_OUT="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_100"
 RANDOM_NONE_OUT="${RESULT_ROOT}/al_xgb_random_none_${TOTAL_QUERIES}_lambda_inf"
 LAMBDAS=(10 100 1000 10000)
+EARLY_LAMBDAS=(10 100)
+LATE_LAMBDAS=(1000 10000)
 
 for required_file in "$WARM_START" "$FULL_DATA"; do
   if [[ ! -f "$required_file" ]]; then
@@ -109,6 +116,11 @@ L2_ARGS=(
   --voronoi-l2-dual-relative-tol "$VORONOI_L2_DUAL_RELATIVE_TOL"
   --voronoi-l2-weight-l1-tol "$VORONOI_L2_WEIGHT_L1_TOL"
   --voronoi-l2-stability-patience "$VORONOI_L2_STABILITY_PATIENCE"
+  --wasserstein-l2-coordinate-steps "$WASSERSTEIN_L2_COORDINATE_STEPS"
+  --wasserstein-l2-corrective-max-sweeps "$WASSERSTEIN_L2_CORRECTIVE_MAX_SWEEPS"
+  --wasserstein-l2-corrective-dual-relative-tol "$WASSERSTEIN_L2_CORRECTIVE_DUAL_RELATIVE_TOL"
+  --wasserstein-l2-corrective-z-relative-tol "$WASSERSTEIN_L2_CORRECTIVE_Z_RELATIVE_TOL"
+  --wasserstein-l2-corrective-patience "$WASSERSTEIN_L2_CORRECTIVE_PATIENCE"
 )
 
 is_completed_run() {
@@ -146,9 +158,10 @@ run_one() {
   "$@"
 }
 
-for lambda in "${LAMBDAS[@]}"; do
-  out_dir="${RESULT_ROOT}/al_xgb_wasserstein_l2_v2_${TOTAL_QUERIES}_lambda_${lambda}"
-  run_one "Full-Voronoi Wasserstein-L2 v2 lambda=${lambda}" "$out_dir" \
+run_wasserstein_l2() {
+  local lambda="$1"
+  local out_dir="${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${lambda}"
+  run_one "Power-cell Wasserstein-L2 v3 lambda=${lambda}" "$out_dir" \
     python active_learning.py \
       "${COMMON_ARGS[@]}" \
       "${L2_ARGS[@]}" \
@@ -156,7 +169,18 @@ for lambda in "${LAMBDAS[@]}"; do
       --reweighting voronoi_l2 \
       --reweight-lambda "$lambda" \
       --out-dir "$out_dir"
-done
+}
+
+# Put kmedian++ first so the non-Wasserstein regularized baseline completes
+# before the slower high-lambda Wasserstein solves.
+run_one "kmedian++ plus Voronoi-L2 lambda=100" "$KMED_L2_OUT" \
+  python active_learning.py \
+    "${COMMON_ARGS[@]}" \
+    "${L2_ARGS[@]}" \
+    --strategy kmedianpp \
+    --reweighting voronoi_l2 \
+    --reweight-lambda 100 \
+    --out-dir "$KMED_L2_OUT"
 
 run_one "Wasserstein hard lambda=0" "$WASS_HARD_OUT" \
   python active_learning.py \
@@ -165,6 +189,10 @@ run_one "Wasserstein hard lambda=0" "$WASS_HARD_OUT" \
     --reweighting hard \
     --reweight-lambda 0.0 \
     --out-dir "$WASS_HARD_OUT"
+
+for lambda in "${EARLY_LAMBDAS[@]}"; do
+  run_wasserstein_l2 "$lambda"
+done
 
 run_one "Pure Wasserstein query plus no reweight" "$WASS_NONE_OUT" \
   python active_learning.py \
@@ -175,15 +203,6 @@ run_one "Pure Wasserstein query plus no reweight" "$WASS_NONE_OUT" \
     --reweight-lambda 0.0 \
     --out-dir "$WASS_NONE_OUT"
 
-run_one "kmedian++ plus Voronoi-L2 lambda=100" "$KMED_L2_OUT" \
-  python active_learning.py \
-    "${COMMON_ARGS[@]}" \
-    "${L2_ARGS[@]}" \
-    --strategy kmedianpp \
-    --reweighting voronoi_l2 \
-    --reweight-lambda 100 \
-    --out-dir "$KMED_L2_OUT"
-
 run_one "Random query plus no reweight" "$RANDOM_NONE_OUT" \
   python active_learning.py \
     "${COMMON_ARGS[@]}" \
@@ -193,11 +212,16 @@ run_one "Random query plus no reweight" "$RANDOM_NONE_OUT" \
     --reweight-lambda 1.0 \
     --out-dir "$RANDOM_NONE_OUT"
 
+# The two slowest/highest-lambda Wasserstein solves deliberately run last.
+for lambda in "${LATE_LAMBDAS[@]}"; do
+  run_wasserstein_l2 "$lambda"
+done
+
 WASS_L2_DIRS=(
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v2_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}"
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v2_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}"
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v2_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}"
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v2_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}"
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}"
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}"
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}"
+  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}"
 )
 
 echo ""
@@ -207,29 +231,29 @@ echo "============================================================"
 
 python compare_auc_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
-  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v2_lambda_sweep_average_precision.png" \
+  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_average_precision.png" \
   --metric average_precision \
-  --labels "hard lambda=0" "v2 lambda=10" "v2 lambda=100" "v2 lambda=1000" "v2 lambda=10000" \
+  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000" \
   --cmap-runs viridis
 
 python compare_auc_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
-  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v2_lambda_sweep_pr_auc_trapz.png" \
+  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_pr_auc_trapz.png" \
   --metric pr_auc \
-  --labels "hard lambda=0" "v2 lambda=10" "v2 lambda=100" "v2 lambda=1000" "v2 lambda=10000" \
+  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000" \
   --cmap-runs viridis
 
 python compare_weight_l2_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
   --metric objective_l2_norm \
-  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v2_lambda_sweep_weight_l2_norm.png" \
-  --labels "hard lambda=0" "v2 lambda=10" "v2 lambda=100" "v2 lambda=1000" "v2 lambda=10000"
+  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_weight_l2_norm.png" \
+  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000"
 
 python compare_weight_l2_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
   --metric effective_sample_size \
-  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v2_lambda_sweep_effective_sample_size.png" \
-  --labels "hard lambda=0" "v2 lambda=10" "v2 lambda=100" "v2 lambda=1000" "v2 lambda=10000"
+  --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_effective_sample_size.png" \
+  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000"
 
 ALL_RUNS=(
   "$WASS_HARD_OUT"
@@ -240,10 +264,10 @@ ALL_RUNS=(
 )
 ALL_LABELS=(
   "Wass hard lambda=0"
-  "Wass-L2 v2 lambda=10"
-  "Wass-L2 v2 lambda=100"
-  "Wass-L2 v2 lambda=1000"
-  "Wass-L2 v2 lambda=10000"
+  "Wass-L2 v3 lambda=10"
+  "Wass-L2 v3 lambda=100"
+  "Wass-L2 v3 lambda=1000"
+  "Wass-L2 v3 lambda=10000"
   "Wass query lambda=0 + no reweight"
   "kmedian++ L2 lambda=100"
   "random + no reweight"
