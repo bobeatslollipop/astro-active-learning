@@ -103,8 +103,14 @@ The main commands expect these local files in the repository root:
 
 - bp_rp_lamost_normalized.h5
 - bp_rp_lamost_normalized_low_teff.h5
+- bp_rp_lamost_normalized_low_teff_100k_seed42.h5 (100K local subsample)
+- bp_rp_lamost_normalized_low_teff_50k_seed42.h5 (50K nested subsample of the 100K file)
 
 They are intentionally not tracked by Git.
+
+The 50K file uses `default_rng(42)` without replacement over the 100K file.
+Its HDF5 attributes record the parent SHA-256, selected-index SHA-256, sampling
+method, seed, row count, and inherited low-temperature provenance.
 
 To normalize a raw columnar HDF5 file:
 
@@ -446,6 +452,7 @@ extremely concentrated.
 Important current runners include:
 
 - run_xgboost_noclassbalance_100k_warm_eval30_v3.sh
+- run_xgboost_noclassbalance_50k_warm_eval30_v3.sh
 - diagnose_voronoi_l2_gap_stability_100k.py
 - run_xgboost_kmedianpp_l2_lambda_sweep_noclassbalance_fixed10k.sh
 - run_xgboost_wasserstein_l2_noclassbalance_reweightfull_eval15.sh

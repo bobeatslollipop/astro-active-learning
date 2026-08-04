@@ -6,7 +6,7 @@ export CUDA_VISIBLE_DEVICES=1
 export PYTHONUNBUFFERED=1
 export MPLCONFIGDIR=/tmp/matplotlib-cache
 
-WARM_START=bp_rp_lamost_normalized_low_teff_100k_seed42.h5
+WARM_START="${WARM_START:-bp_rp_lamost_normalized_low_teff_100k_seed42.h5}"
 FULL_DATA=bp_rp_lamost_normalized.h5
 FEH_THRESHOLD=-2.0
 TOTAL_QUERIES=150
@@ -17,7 +17,7 @@ TRAIN_WEIGHT_SUM_MODE=fixed
 TRAIN_WEIGHT_SUM=10000.0
 EVAL_SOURCE=full_heldout
 REWEIGHT_SOURCE=full_non_eval
-WASS_POOL=45000
+WASS_POOL="${WASS_POOL:-45000}"
 WASS_PLAN_SIZE="$EVAL_EVERY"
 C=10000.0
 EVAL_SIZE=500000
@@ -25,7 +25,7 @@ SEED=42
 N_TRIALS=5
 N_SNAPSHOTS=5
 SOFT_TOPK=20
-REWEIGHT_POOL=100000
+REWEIGHT_POOL="${REWEIGHT_POOL:-100000}"
 VORONOI_L2_MAX_ITER=1024
 VORONOI_L2_RELATIVE_GAP_TOL=1e-2
 VORONOI_L2_GRADIENT_TOL=1e-4
@@ -52,16 +52,25 @@ XGB_DEVICE=cuda
 XGB_N_JOBS=-1
 
 RESULTS_ROOT="${RESULTS_ROOT:-results/active_learning}"
-FAMILY="xgb_noclassbalance_100k_warm_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}_v3"
+FAMILY="${EXPERIMENT_FAMILY:-xgb_noclassbalance_100k_warm_fixed10k_fullheldout_reweightfull_${TOTAL_QUERIES}q_${N_TRIALS}seeds_eval${EVAL_EVERY}_v3}"
 RESULT_ROOT="${RESULTS_ROOT}/${FAMILY}"
+RUN_LAMBDA_10000="${RUN_LAMBDA_10000:-1}"
+RUN_LABEL="${RUN_LABEL:-100K-warm, eval30}"
 
 WASS_HARD_OUT="${RESULT_ROOT}/al_xgb_wasserstein_hard_${TOTAL_QUERIES}_lambda_0"
 WASS_NONE_OUT="${RESULT_ROOT}/al_xgb_wasserstein_none_${TOTAL_QUERIES}_lambda_0_queryonly"
 KMED_L2_OUT="${RESULT_ROOT}/al_xgb_kmedianpp_l2_${TOTAL_QUERIES}_lambda_100"
 RANDOM_NONE_OUT="${RESULT_ROOT}/al_xgb_random_none_${TOTAL_QUERIES}_lambda_inf"
-LAMBDAS=(10 100 1000 10000)
+LAMBDAS=(10 100 1000)
 EARLY_LAMBDAS=(10 100)
-LATE_LAMBDAS=(1000 10000)
+LATE_LAMBDAS=(1000)
+if [[ "$RUN_LAMBDA_10000" == "1" ]]; then
+  LAMBDAS+=(10000)
+  LATE_LAMBDAS+=(10000)
+elif [[ "$RUN_LAMBDA_10000" != "0" ]]; then
+  echo "RUN_LAMBDA_10000 must be 0 or 1; got: $RUN_LAMBDA_10000" >&2
+  exit 1
+fi
 
 for required_file in "$WARM_START" "$FULL_DATA"; do
   if [[ ! -f "$required_file" ]]; then
@@ -212,48 +221,48 @@ run_one "Random query plus no reweight" "$RANDOM_NONE_OUT" \
     --reweight-lambda 1.0 \
     --out-dir "$RANDOM_NONE_OUT"
 
-# The two slowest/highest-lambda Wasserstein solves deliberately run last.
+# The highest-lambda Wasserstein solves deliberately run last.
 for lambda in "${LATE_LAMBDAS[@]}"; do
   run_wasserstein_l2 "$lambda"
 done
 
-WASS_L2_DIRS=(
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[0]}"
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[1]}"
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[2]}"
-  "${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${LAMBDAS[3]}"
-)
+WASS_L2_DIRS=()
+WASS_SWEEP_LABELS=("hard lambda=0")
+for lambda in "${LAMBDAS[@]}"; do
+  WASS_L2_DIRS+=("${RESULT_ROOT}/al_xgb_wasserstein_l2_v3_${TOTAL_QUERIES}_lambda_${lambda}")
+  WASS_SWEEP_LABELS+=("v3 lambda=${lambda}")
+done
 
 echo ""
 echo "============================================================"
-echo "  Generating 100K-warm, eval30 comparison plots"
+echo "  Generating ${RUN_LABEL} comparison plots"
 echo "============================================================"
 
 python compare_auc_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
   --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_average_precision.png" \
   --metric average_precision \
-  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000" \
+  --labels "${WASS_SWEEP_LABELS[@]}" \
   --cmap-runs viridis
 
 python compare_auc_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
   --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_pr_auc_trapz.png" \
   --metric pr_auc \
-  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000" \
+  --labels "${WASS_SWEEP_LABELS[@]}" \
   --cmap-runs viridis
 
 python compare_weight_l2_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
   --metric objective_l2_norm \
   --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_weight_l2_norm.png" \
-  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000"
+  --labels "${WASS_SWEEP_LABELS[@]}"
 
 python compare_weight_l2_trials.py \
   "$WASS_HARD_OUT" "${WASS_L2_DIRS[@]}" \
   --metric effective_sample_size \
   --out "${RESULT_ROOT}/figures/final/wasserstein_l2_v3_lambda_sweep_effective_sample_size.png" \
-  --labels "hard lambda=0" "v3 lambda=10" "v3 lambda=100" "v3 lambda=1000" "v3 lambda=10000"
+  --labels "${WASS_SWEEP_LABELS[@]}"
 
 ALL_RUNS=(
   "$WASS_HARD_OUT"
@@ -262,30 +271,30 @@ ALL_RUNS=(
   "$KMED_L2_OUT"
   "$RANDOM_NONE_OUT"
 )
-ALL_LABELS=(
-  "Wass hard lambda=0"
-  "Wass-L2 v3 lambda=10"
-  "Wass-L2 v3 lambda=100"
-  "Wass-L2 v3 lambda=1000"
-  "Wass-L2 v3 lambda=10000"
+ALL_LABELS=("Wass hard lambda=0")
+for lambda in "${LAMBDAS[@]}"; do
+  ALL_LABELS+=("Wass-L2 v3 lambda=${lambda}")
+done
+ALL_LABELS+=(
   "Wass query lambda=0 + no reweight"
   "kmedian++ L2 lambda=100"
   "random + no reweight"
 )
+RUN_COUNT="${#ALL_RUNS[@]}"
 
 python compare_auc_trials.py \
   "${ALL_RUNS[@]}" \
-  --out "${RESULT_ROOT}/figures/final/noclassbalance_8run_average_precision.png" \
+  --out "${RESULT_ROOT}/figures/final/noclassbalance_${RUN_COUNT}run_average_precision.png" \
   --metric average_precision \
   --labels "${ALL_LABELS[@]}" \
   --cmap-runs none
 
 python compare_auc_trials.py \
   "${ALL_RUNS[@]}" \
-  --out "${RESULT_ROOT}/figures/final/noclassbalance_8run_pr_auc_trapz.png" \
+  --out "${RESULT_ROOT}/figures/final/noclassbalance_${RUN_COUNT}run_pr_auc_trapz.png" \
   --metric pr_auc \
   --labels "${ALL_LABELS[@]}" \
   --cmap-runs none
 
 echo ""
-echo "All eight 100K-warm no-class-rebalance runs completed."
+echo "All ${RUN_COUNT} ${RUN_LABEL} no-class-rebalance runs completed."
