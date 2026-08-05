@@ -109,9 +109,9 @@ def main():
     a("--soft-topk", type=int, default=0,
        help="Top-K for soft reweighting. 0=auto (calibrate K per snapshot). Only used when --reweighting=soft.")
     a("--reweight-pool-size", dest="reweight_pool_size", type=int, default=None,
-       help="Subsample pool to this size for soft/voronoi_l2/kl/moment_l2 reweighting. By default (None) uses the full pool. "
-            "Setting e.g. 500000 computes weights on a 500k subsample instead of the full pool. "
-            "Hard reweighting uses the full selected --reweight-source target and is not subsampled by this option.")
+       help="Subsample the selected target to this size for hard/soft/voronoi_l2/kl/moment_l2 reweighting. "
+            "By default (None) uses the full target. Setting e.g. 500000 computes weights on a 500k "
+            "subsample instead of the full target.")
     a("--softmax-pool-size", dest="reweight_pool_size", type=int, default=None,
        help=argparse.SUPPRESS)
     a("--reweight-source", default="query_pool", choices=["query_pool", "full_non_eval"],
@@ -131,8 +131,9 @@ def main():
     a("--warm-start-max",  type=int, default=None,    help="Cap warm-start size.")
     a("--pool-max",        type=int, default=None,    help="Cap pool size.")
     a("--wass-pool-size",  type=int, default=50000,
-      help="Candidate subpool size for Wasserstein-family strategies. "
-           "Wasserstein-L2 v3 scores these candidates on the actual reweight target.")
+      help="Candidate subpool size for Wasserstein-family and kmedian++ strategies. "
+           "Wasserstein-L2 v3 scores these candidates on the actual reweight target; "
+           "kmedian++ draws a fresh subpool for each query batch.")
     a("--wass-plan-size", type=int, default=None,
       help="Number of Wasserstein-greedy points to plan before rebuilding the random subpool. "
            "Wasserstein-L2 v3 always plans only the current query batch because each "

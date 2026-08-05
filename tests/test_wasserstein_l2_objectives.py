@@ -19,6 +19,7 @@ from al_queries import (
     _wasserstein_l2_initial_capture_counts_numpy,
     _wasserstein_l2_v2_coupling_numpy,
     _wasserstein_l2_v2_coupling_torch,
+    query_kmedianpp,
     query_wasserstein_l2,
 )
 from diagnose_wasserstein_l2_objectives import (
@@ -52,6 +53,35 @@ def brute_greedy_plan(target, support, n_pick, reweight_lambda):
         available[best] = False
         support = np.vstack([support, target[best]])
     return selected
+
+
+class KMedianCandidateSubpoolTests(unittest.TestCase):
+    def test_candidate_pool_size_is_honored_and_indices_are_mapped(self):
+        X_pool = np.arange(30, dtype=np.float32).reshape(10, 3)
+        expected_rng = np.random.RandomState(7)
+        expected_subpool = expected_rng.choice(10, 4, replace=False)
+        rng = np.random.RandomState(7)
+        state = {"min_dists": np.ones(10, dtype=np.float32)}
+
+        with mock.patch(
+            "al_queries._query_kmedianpp_numpy",
+            return_value=np.array([0, 3], dtype=np.intp),
+        ) as mocked:
+            selected = query_kmedianpp(
+                X_pool,
+                None,
+                2,
+                rng,
+                X_labeled=X_pool[:1],
+                state=state,
+                pool_size=4,
+            )
+
+        np.testing.assert_array_equal(
+            selected, expected_subpool[np.array([0, 3], dtype=np.intp)]
+        )
+        self.assertEqual(len(mocked.call_args.args[0]), 4)
+        self.assertEqual(state, {})
 
 
 class FullVoronoiL2ScoreTests(unittest.TestCase):

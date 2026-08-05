@@ -197,7 +197,7 @@ Use python active_learning.py --help for the complete option list.
 | wasserstein | Greedy geometric coverage on a random target/candidate subpool. |
 | wasserstein_l2 | Power-cell restricted-dual greedy insertion coupled to Voronoi-L2 reweighting. |
 | entropicOT | Temperature-controlled entropic transport variant. |
-| kmedianpp | k-median++ geometric coverage baseline. |
+| kmedianpp | k-median++ geometric coverage on a fresh random candidate subpool per query batch. |
 | moment_matching | Ridge-design selection that reduces feature-moment mismatch. |
 
 Wasserstein-family planning is approximate even before regularization because it
@@ -205,6 +205,13 @@ operates on random candidate subpools controlled by wass_pool_size. For
 Wasserstein-L2 v3, the candidates are scored against the actual reweight target
 and a new plan is built after every reweight snapshot; no stale plan tail is
 reused after the power diagram changes.
+
+Current kmedian++ implementation version 2 also honors `wass_pool_size`: each
+query batch draws that many currently available candidates without replacement,
+then performs distance-proportional sampling inside the subpool using the full
+labeled support. Historical kmedian++ artifacts without an implementation
+version used the complete available query pool even when their params recorded
+a `wass_pool_size` value.
 
 ### Wasserstein-L2 interpretation
 

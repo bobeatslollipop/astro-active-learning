@@ -12,6 +12,9 @@ from al_data import _timing, mp_probability
 WASSERSTEIN_L2_QUERY_OBJECTIVE = "power_diagram_restricted_dual_drop"
 WASSERSTEIN_L2_IMPLEMENTATION_VERSION = 3
 WASSERSTEIN_L2_DUAL_UPDATE = "fixed_old_z_block_corrective_new_coordinates"
+KMEDIANPP_QUERY_OBJECTIVE = "distance_proportional_sampling"
+KMEDIANPP_IMPLEMENTATION_VERSION = 2
+KMEDIANPP_CANDIDATE_POOL = "fresh_random_subpool_per_query_batch"
 
 
 def query_random(X_pool, clf, n, rng, **kw):
@@ -1953,7 +1956,8 @@ def _entropicOT_coupling_torch(T, X_labeled, n_pick, rng, temperature):
 # Core-set / farthest-first distance maintenance, but replaces
 # the greedy argmax with D(x) sampling ∝ min_dist (k-median++ init).
 
-def query_kmedianpp(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
+def query_kmedianpp(X_pool, clf, n, rng, *, X_labeled=None, state=None,
+                    pool_size=None, **kw):
     """
     k-Median++ style sampling.
 
@@ -1968,9 +1972,34 @@ def query_kmedianpp(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
       • Introduces controlled randomness → less susceptible to outlier
         attraction and boundary artifacts.
       • Still biases selection toward under-represented regions.
+
+    When ``pool_size`` is smaller than the available pool, each query batch
+    draws a fresh candidate subpool without replacement. Distances are then
+    initialized from the full labeled support, so no cache from a different
+    candidate subpool is reused.
     """
     if state is None:
         state = {}
+
+    n_pool = len(X_pool)
+    n_pick = min(int(n), n_pool)
+    if n_pick <= 0:
+        return np.empty(0, dtype=np.intp)
+    if pool_size is None:
+        effective_ps = n_pool
+    else:
+        effective_ps = min(n_pool, max(n_pick, int(pool_size)))
+
+    if effective_ps < n_pool:
+        subpool_idx = rng.choice(n_pool, effective_ps, replace=False)
+        X_candidates = X_pool[subpool_idx]
+        candidate_state = {}
+        state.clear()
+        print(f"  [k-Median++] Candidate subpool: {effective_ps} / {n_pool}")
+    else:
+        subpool_idx = None
+        X_candidates = X_pool
+        candidate_state = state
 
     try:
         import torch
@@ -1979,9 +2008,16 @@ def query_kmedianpp(X_pool, clf, n, rng, *, X_labeled=None, state=None, **kw):
         has_torch = False
 
     if has_torch and torch.cuda.is_available():
-        return _query_kmedianpp_torch(X_pool, n, rng, X_labeled, state)
+        chosen = _query_kmedianpp_torch(
+            X_candidates, n_pick, rng, X_labeled, candidate_state
+        )
     else:
-        return _query_kmedianpp_numpy(X_pool, n, rng, X_labeled, state)
+        chosen = _query_kmedianpp_numpy(
+            X_candidates, n_pick, rng, X_labeled, candidate_state
+        )
+    if subpool_idx is None:
+        return chosen
+    return subpool_idx[np.asarray(chosen, dtype=np.intp)]
 
 
 def _query_kmedianpp_torch(X_pool, n, rng, X_labeled, state):

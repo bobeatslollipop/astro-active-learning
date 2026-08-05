@@ -32,6 +32,9 @@ from al_metadata import (
     write_params,
 )
 from al_queries import (
+    KMEDIANPP_CANDIDATE_POOL,
+    KMEDIANPP_IMPLEMENTATION_VERSION,
+    KMEDIANPP_QUERY_OBJECTIVE,
     STRATEGIES,
     WASSERSTEIN_L2_DUAL_UPDATE,
     WASSERSTEIN_L2_IMPLEMENTATION_VERSION,
@@ -59,6 +62,18 @@ from al_reweighting import (
     compute_voronoi_l2_weights,
     compute_voronoi_weights,
 )
+
+
+def _should_subsample_reweight_target(reweighting, requested_size, source_size):
+    """Return whether this reweighting run should use a fixed target subsample."""
+    supports_subsample = reweighting in (
+        "hard", "soft", "voronoi_l2", "kl", "moment_l2"
+    )
+    return bool(
+        supports_subsample
+        and requested_size
+        and requested_size < source_size
+    )
 
 
 def run_active_learning(args):
@@ -89,6 +104,10 @@ def run_active_learning(args):
         args.query_implementation_version = WASSERSTEIN_L2_IMPLEMENTATION_VERSION
         args.query_dual_update = WASSERSTEIN_L2_DUAL_UPDATE
         args.query_target_source = "reweight_target"
+    elif args.strategy == "kmedianpp":
+        args.query_objective = KMEDIANPP_QUERY_OBJECTIVE
+        args.query_implementation_version = KMEDIANPP_IMPLEMENTATION_VERSION
+        args.query_target_source = KMEDIANPP_CANDIDATE_POOL
 
     os.makedirs(args.out_dir, exist_ok=True)
     t0 = time.perf_counter()
@@ -300,11 +319,10 @@ def run_active_learning(args):
     X_labeled = np.empty((max_labeled, n_features), dtype=np.float32)
     y_labeled = np.empty(max_labeled, dtype=np.int32)
 
-    subsampled_reweighting = args.reweighting in ("soft", "voronoi_l2", "kl", "moment_l2")
-    uses_reweight_subsample = (
-        subsampled_reweighting
-        and args.reweight_pool_size
-        and args.reweight_pool_size < reweight_source_n
+    uses_reweight_subsample = _should_subsample_reweight_target(
+        args.reweighting,
+        args.reweight_pool_size,
+        reweight_source_n,
     )
     X_reweight_full_non_eval = None
     if args.reweighting != "none" and args.reweight_source == "full_non_eval" and not uses_reweight_subsample:
