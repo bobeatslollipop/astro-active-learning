@@ -1,0 +1,124 @@
+{
+  "backbone": "torchvision.models.resnet50",
+  "batch_size": 64,
+  "created_at_utc": "2026-08-05T16:49:30.163199+00:00",
+  "data_root": "/home/bgg7950/astro-active-learning/experiments/officehome_frozen/.data",
+  "dataset_metadata": {
+    "dataset_source": {
+      "created_at_utc": "2026-08-05T16:42:53.740460+00:00",
+      "dataset_root": "/home/bgg7950/astro-active-learning/experiments/officehome_frozen/.data/office_home_huggingface",
+      "download_skipped": false,
+      "fallback_notice": "The official Google Drive archive was unavailable. This run uses the explicitly allowed flwrlabs/office-home fallback and validates its contents independently.",
+      "huggingface_dataset": "flwrlabs/office-home",
+      "huggingface_fingerprint": "aa49ca9c8edf98cb",
+      "marker_path": "/home/bgg7950/astro-active-learning/experiments/officehome_frozen/.data/.dataset_source.json",
+      "num_rows_reported": 15588,
+      "provider": "huggingface",
+      "schema_version": 1,
+      "source_url": "https://huggingface.co/datasets/flwrlabs/office-home"
+    },
+    "domain_counts": {
+      "art": 2427,
+      "clipart": 4365,
+      "product": 4439,
+      "real_world": 4357
+    },
+    "num_classes": 65,
+    "num_images": 15588,
+    "path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/dataset/dataset_metadata.json",
+    "sha256": "sha256:d81787509d34b6a6b839b250ce5167e80e363e6f4701955800784bfbdb45f6b0"
+  },
+  "dataset_root": "/home/bgg7950/astro-active-learning/experiments/officehome_frozen/.data/office_home_huggingface",
+  "deterministic_order": true,
+  "extraction_device": "cuda",
+  "extraction_device_name": "NVIDIA RTX A5000",
+  "extraction_seconds": 43.27780936472118,
+  "extraction_seed": 0,
+  "feature_dtype": "float32",
+  "feature_files": {
+    "l2": {
+      "dtype": "float32",
+      "maximum_normalized_row_norm_error": 1.608021571453122e-08,
+      "minimum_raw_row_norm": 11.185944175423554,
+      "normalization": "row-wise L2 after frozen raw feature extraction",
+      "path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/resnet50_imagenet1k_v1_l2.npy",
+      "sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+      "shape": [
+        15588,
+        2048
+      ],
+      "zero_epsilon": 1e-12
+    },
+    "raw": {
+      "dtype": "float32",
+      "path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/resnet50_imagenet1k_v1_raw.npy",
+      "sha256": "sha256:6adf9f5325089da41ae92dcb1f1b0ae772aa60162f5f676d5b51355fa56c8f0a",
+      "shape": [
+        15588,
+        2048
+      ]
+    }
+  },
+  "feature_shape": [
+    15588,
+    2048
+  ],
+  "fine_tuned": false,
+  "inference_context": "torch.inference_mode",
+  "manifest_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/manifest.csv",
+  "manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+  "model_mode": "eval",
+  "preprocessing": {
+    "antialias": true,
+    "augmentation": null,
+    "center_crop": [
+      224,
+      224
+    ],
+    "convert_rgb": true,
+    "implementation": "torchvision ResNet50_Weights.IMAGENET1K_V1.transforms()",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "resize_shorter_side": 256,
+    "resolved_repr": "ImageClassification(\n    crop_size=[224]\n    resize_size=[256]\n    mean=[0.485, 0.456, 0.406]\n    std=[0.229, 0.224, 0.225]\n    interpolation=InterpolationMode.BILINEAR\n)",
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "repeat_check": {
+    "atol": 1e-05,
+    "batch_context_rows": 64,
+    "max_abs_error": 0.0,
+    "passed": true,
+    "rows": 8,
+    "rtol": 1e-05
+  },
+  "runtime": {
+    "Pillow": "12.1.1",
+    "created_at_utc": "2026-08-05T16:49:30.164108+00:00",
+    "cuda_available": true,
+    "cuda_device_count": 1,
+    "cuda_device_names": [
+      "NVIDIA RTX A5000"
+    ],
+    "cudnn": "91002",
+    "numpy": "1.26.4",
+    "pandas": "2.3.3",
+    "platform": "Linux-6.8.0-106-generic-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "scikit-learn": "1.7.2",
+    "torch": "2.10.0+cu128",
+    "torch_cuda": "12.8",
+    "torchvision": "0.25.0+cu128"
+  },
+  "schema_version": 1,
+  "source_manifest_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/dataset/manifest.csv",
+  "source_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+  "weights_enum": "ResNet50_Weights.IMAGENET1K_V1",
+  "workers": 4
+}

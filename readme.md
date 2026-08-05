@@ -529,3 +529,10 @@ query budget, evaluation schedule, model hyperparameters, and trial count.
   though all current code uses MP = 0. Its params file records this explicitly.
 - Generated figures are intentionally local; retain the JSON/CSV inputs needed
   to reconstruct any plot selected for publication.
+
+## Additional domain-adaptation datasets
+
+The independent Office-Home frozen-feature pipeline lives in
+`experiments/officehome_frozen/`. It uses a frozen ImageNet-pretrained
+ResNet-50 and weighted 65-class logistic regression without changing the
+astronomy-specific active-learning entry point.

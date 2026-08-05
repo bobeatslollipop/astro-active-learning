@@ -1,6 +1,7 @@
 # Local datasets
 *.h5
 *.hdf5
+/experiments/officehome_frozen/.data/
 
 # Python environments and caches
 __pycache__/
@@ -43,6 +44,17 @@ venv/
 !/results/**/precision_at_k.csv
 !/results/**/diagnostics.csv
 !/results/**/summary.txt
+!/results/**/dataset_metadata.json
+!/results/**/task_metadata.json
+!/results/**/class_mapping.json
+!/results/**/resnet50_imagenet1k_v1_metadata.json
+!/results/**/config.json
+!/results/**/training_metrics.json
+!/results/**/metrics.json
+!/results/**/l2_selection.json
+!/results/**/optimization_history.csv
+!/results/**/l2_cv_results.csv
+!/results/**/l2_cv_summary.csv
 
 # Curated family-level figures only
 !/results/**/figures/final/
@@ -53,3 +65,13 @@ venv/
 /results/**/logs/
 /results/logs/
 /results/**/top_candidates_*.csv
+/results/**/manifest.csv
+/results/**/manifest_private.csv
+/results/**/source_labeled.csv
+/results/**/target_pool_public.csv
+/results/**/target_pool_oracle_private.csv
+/results/**/target_test_private.csv
+/results/**/*.npy
+/results/**/model.pt
+/results/**/predictions.csv
+/results/domain_adaptation/officehome_frozen/smoke*/
