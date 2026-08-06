@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any, Iterable
 
 import numpy as np
@@ -378,6 +379,7 @@ def train_from_task(
     tolerance: float = 1e-6,
     seed: int = 0,
 ) -> dict:
+    train_started = time.perf_counter()
     features, _, row_to_position = _load_feature_index(features_path, feature_manifest_path)
     training, weights, weight_summary = build_training_table(
         task_dir,
@@ -387,6 +389,7 @@ def train_from_task(
     row_ids = training["row_id"].to_numpy(dtype=np.int64)
     X = _feature_rows(features, row_to_position, row_ids)
     y = training["class_id"].to_numpy(dtype=np.int64)
+    fit_started = time.perf_counter()
     model, history, optimization = optimize_weighted_logreg(
         X,
         y,
@@ -397,10 +400,12 @@ def train_from_task(
         tolerance=tolerance,
         seed=seed,
     )
+    optimization["fit_seconds"] = float(time.perf_counter() - fit_started)
     source_mask = training["training_origin"].to_numpy() == "source"
     source_metrics = classification_metrics(model, X[source_mask], y[source_mask])
     all_training_metrics = classification_metrics(model, X, y)
     norms = _model_norms(model)
+    optimization["train_pipeline_seconds"] = float(time.perf_counter() - train_started)
 
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -495,43 +500,81 @@ def evaluate_saved_model(
     output_dir = Path(output_dir).expanduser().resolve()
     with (task_dir / "task_metadata.json").open("r", encoding="utf-8") as handle:
         task_metadata = json.load(handle)
-    evaluation = _read_labeled_manifest(task_dir / "target_test_private.csv", "target-test")
+    heldout = _read_labeled_manifest(task_dir / "target_test_private.csv", "target-test")
+    target_pool_oracle = _read_labeled_manifest(
+        task_dir / "target_pool_oracle_private.csv", "target-pool oracle"
+    )
+    target_pool_public = pd.read_csv(task_dir / "target_pool_public.csv")
+    if list(target_pool_public.columns) != ["row_id", "relative_image_path", "domain"]:
+        raise ValueError("Target-pool public manifest must be label-free.")
+    if target_pool_public["row_id"].duplicated().any():
+        raise ValueError("Target-pool public manifest contains duplicate row IDs.")
+    public_ids = set(target_pool_public["row_id"].astype(int))
+    oracle_ids = set(target_pool_oracle["row_id"].astype(int))
+    if public_ids != oracle_ids:
+        raise ValueError("Target-pool public and private-oracle row IDs do not match.")
+
+    if task_metadata["protocol"] == "heldout":
+        overlap = oracle_ids & set(heldout["row_id"].astype(int))
+        if overlap:
+            raise ValueError(f"Heldout and target-pool rows overlap: {sorted(overlap)[:20]}")
+        target_full = pd.concat([target_pool_oracle, heldout], ignore_index=True)
+        target_full.sort_values("row_id", inplace=True, ignore_index=True)
+    else:
+        if oracle_ids != set(heldout["row_id"].astype(int)):
+            raise ValueError("Transductive target pool and target-test rows must match.")
+        target_full = heldout.copy()
+
     features, _, row_to_position = _load_feature_index(features_path, feature_manifest_path)
-    X = _feature_rows(features, row_to_position, evaluation["row_id"].to_numpy(dtype=np.int64))
-    y = evaluation["class_id"].to_numpy(dtype=np.int64)
     model = load_model(model_path)
-    logits = _logits_numpy(model, X)
-    probabilities = _probabilities_from_logits(logits)
-    predictions = probabilities.argmax(axis=1)
-    full_metrics = classification_metrics(model, X, y)
     query_ids = set()
     if query_ids_path is not None:
         query_ids = set(int(value) for value in load_single_column_ids(query_ids_path))
-        target_pool_public = pd.read_csv(task_dir / "target_pool_public.csv")
-        if set(target_pool_public.columns) != {"row_id", "relative_image_path", "domain"}:
-            raise ValueError("Target-pool public manifest must be label-free.")
-        pool_ids = set(target_pool_public["row_id"].astype(int))
-        unknown = query_ids - pool_ids
+        unknown = query_ids - public_ids
         if unknown:
-            leaked = unknown & set(evaluation["row_id"].astype(int))
+            leaked = unknown & set(heldout["row_id"].astype(int))
             if leaked:
                 raise ValueError(f"query IDs contain target-test rows: {sorted(leaked)[:20]}")
             raise ValueError(f"query IDs are not members of the target pool: {sorted(unknown)[:20]}")
 
-    if task_metadata["protocol"] == "transductive":
-        unqueried_mask = ~evaluation["row_id"].isin(query_ids).to_numpy()
-        if not unqueried_mask.any():
-            raise ValueError("No unqueried target examples remain for transductive evaluation.")
-        evaluation_metrics = {
-            "protocol": "transductive",
-            "target_full": full_metrics,
-            "target_unqueried": classification_metrics(model, X[unqueried_mask], y[unqueried_mask]),
-        }
-    else:
-        evaluation_metrics = {"protocol": "heldout", "target_test": full_metrics}
+    def evaluate_frame(frame: pd.DataFrame):
+        X = _feature_rows(
+            features, row_to_position, frame["row_id"].to_numpy(dtype=np.int64)
+        )
+        y = frame["class_id"].to_numpy(dtype=np.int64)
+        probabilities = _probabilities_from_logits(_logits_numpy(model, X))
+        predictions = probabilities.argmax(axis=1)
+        metrics = classification_metrics(model, X, y)
+        return X, y, probabilities, predictions, metrics
 
-    predictions_frame = _prediction_frame(evaluation, probabilities, predictions, query_ids)
-    atomic_write_csv(output_dir / "predictions.csv", predictions_frame)
+    _, _, heldout_probabilities, heldout_predictions, heldout_metrics = evaluate_frame(heldout)
+    X_full, y_full, full_probabilities, full_predictions, full_metrics = evaluate_frame(target_full)
+    unqueried_mask = ~target_full["row_id"].isin(query_ids).to_numpy()
+    if not unqueried_mask.any():
+        raise ValueError("No unqueried target examples remain for transductive evaluation.")
+    unqueried_metrics = classification_metrics(
+        model, X_full[unqueried_mask], y_full[unqueried_mask]
+    )
+    evaluation_metrics = {
+        "protocol": task_metadata["protocol"],
+        "target_transductive_full": full_metrics,
+        "target_transductive_unqueried": unqueried_metrics,
+    }
+    if task_metadata["protocol"] == "heldout":
+        evaluation_metrics["target_test"] = heldout_metrics
+        evaluation_metrics["target_heldout"] = heldout_metrics
+    else:
+        evaluation_metrics["target_full"] = full_metrics
+        evaluation_metrics["target_unqueried"] = unqueried_metrics
+
+    heldout_predictions_frame = _prediction_frame(
+        heldout, heldout_probabilities, heldout_predictions, query_ids
+    )
+    full_predictions_frame = _prediction_frame(
+        target_full, full_probabilities, full_predictions, query_ids
+    )
+    atomic_write_csv(output_dir / "predictions.csv", heldout_predictions_frame)
+    atomic_write_csv(output_dir / "predictions_transductive.csv", full_predictions_frame)
     training_metrics_path = output_dir / "training_metrics.json"
     metrics_path = output_dir / "metrics.json"
     if training_metrics_path.exists():
@@ -547,6 +590,9 @@ def evaluate_saved_model(
     metrics["evaluation"] = evaluation_metrics
     metrics["evaluation"]["model_sha256"] = sha256_file(model_path)
     metrics["evaluation"]["predictions_sha256"] = sha256_file(output_dir / "predictions.csv")
+    metrics["evaluation"]["predictions_transductive_sha256"] = sha256_file(
+        output_dir / "predictions_transductive.csv"
+    )
     atomic_write_json(metrics_path, metrics)
     return metrics
 

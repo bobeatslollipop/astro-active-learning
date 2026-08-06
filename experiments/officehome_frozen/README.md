@@ -2,12 +2,14 @@
 
 This directory is an isolated domain-adaptation experiment. It extracts a
 deterministic, frozen `ResNet50_Weights.IMAGENET1K_V1` representation and fits
-weighted 65-class multinomial logistic regression. It does not fine-tune the
-backbone, fit PCA, or run a Wasserstein selector.
+weighted 65-class multinomial logistic regression. It also provides reusable
+random/full-pool Wasserstein selection and hard/regularized-Wasserstein
+reweighting adapters. It does not fine-tune the backbone or fit PCA.
 
 The primary protocol is a class-stratified 80/20 target heldout split. The
 source domain is fully labeled, the target-pool manifest exposed to selection
-contains no labels, and target-test labels are read only by the evaluator.
+contains no labels, and target private labels are read only by the trainer
+after query IDs are fixed or by the evaluator.
 
 ## Environment
 
@@ -113,7 +115,9 @@ $PY $EXP/scripts/evaluate_logreg.py \
 ```
 
 The CV command reads only `source_labeled.csv`. Target-test labels are loaded
-only by the last command.
+only by the last command. For every heldout run, that evaluator reports both
+the heldout 20% metrics and transductive metrics on the complete target domain
+(plus the complete target domain with queried rows removed).
 
 ## 4. Query-ID and sample-weight interface
 
@@ -139,9 +143,9 @@ $PY $EXP/scripts/train_weighted_logreg.py \
   --output-dir $OUT/runs/heldout/art_to_clipart_seed0/example_query
 ```
 
-Future selectors must consume `target_pool_public.csv` plus label-free cached
-features and output only the two files above. They must not receive either
-private target manifest.
+Campaign selectors consume `target_pool_public.csv` plus label-free cached
+features and output only query IDs and geometry metadata. They never receive
+either private target manifest.
 
 ## 5. Transductive and all directed pairs
 
@@ -158,6 +162,47 @@ $PY $EXP/scripts/run_all_domain_pairs.py \
 This produces all 12 task directories. Reuse the same frozen feature cache and
 run `select_l2.py`, `train_weighted_logreg.py`, and `evaluate_logreg.py` for
 each pair.
+
+## 6. Round-1 baseline and global-lambda campaign
+
+The recoverable campaign runner covers all 12 directed pairs, seeds 0--4, a
+150-query budget, complete public target geometry, four no-lambda baselines,
+and random-query regularized-Wasserstein calibration on lambdas
+`10,100,1000,10000`. Seed 0 selects one global lambda by equal-pair mean
+heldout cross-entropy; seeds 1--4 reuse it without recalibration.
+
+Run the required Art-to-Clipart seed-0 gate first:
+
+```bash
+env CUDA_VISIBLE_DEVICES=1 $PY $EXP/scripts/run_officehome_campaign.py \
+  --stage smoke --device auto
+```
+
+After it passes, launch the resumable sequential full campaign in tmux:
+
+```bash
+PHYSICAL_GPU=1 STAGE=full \
+  bash $EXP/scripts/launch_round1_campaign.sh
+```
+
+The launcher prints the tmux session, PID file, log, and follow commands. A
+second invocation does not overwrite a live session. Completed runs validate
+their compact record and are skipped; safe partial training/evaluation is
+resumed, while inconsistent partial artifacts and failed regularized solves
+remain explicit. The regularized solver doubles its accepted-iteration ceiling
+once after a failed convergence check and never silently uses a failed solve.
+
+Aggregation can be refreshed without retraining:
+
+```bash
+$PY $EXP/scripts/run_officehome_campaign.py --stage aggregate --device auto
+```
+
+Important reusable artifacts include shared `queries/.../query_ids.csv`, each
+run's `weights/sample_weights.csv`, `run_record.json`,
+`aggregates/per_run_results.csv`, `lambda_calibration_seed0.csv`, and
+`selected_lambda.json`. Large models, features, predictions, full optimizer
+traces, and logs remain local.
 
 ## Objective and theory record
 

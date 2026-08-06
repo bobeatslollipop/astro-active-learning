@@ -132,7 +132,11 @@ def test_train_save_reload_and_evaluate_reproduce_predictions(tmp_path):
     )
     assert evaluated["evaluation"]["protocol"] == "heldout"
     assert evaluated["evaluation"]["target_test"]["num_examples"] == 65
+    assert evaluated["evaluation"]["target_heldout"]["num_examples"] == 65
+    assert evaluated["evaluation"]["target_transductive_full"]["num_examples"] == 130
+    assert evaluated["evaluation"]["target_transductive_unqueried"]["num_examples"] == 130
     assert (output / "predictions.csv").exists()
+    assert (output / "predictions_transductive.csv").exists()
 
     unknown_query = tmp_path / "unknown_query.csv"
     pd.DataFrame({"row_id": [999999]}).to_csv(unknown_query, index=False)

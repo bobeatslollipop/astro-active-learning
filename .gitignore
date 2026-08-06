@@ -55,6 +55,17 @@ venv/
 !/results/**/optimization_history.csv
 !/results/**/l2_cv_results.csv
 !/results/**/l2_cv_summary.csv
+!/results/**/campaign_metadata.json
+!/results/**/campaign_state.json
+!/results/**/selection_metadata.json
+!/results/**/reweighting_metadata.json
+!/results/**/run_record.json
+!/results/**/selected_lambda.json
+!/results/**/query_ids.csv
+!/results/**/lambda_calibration_seed0.csv
+!/results/**/per_run_results.csv
+!/results/**/pair_method_seeds1_4_mean_std.csv
+!/results/**/method_seeds1_4_mean_std.csv
 
 # Curated family-level figures only
 !/results/**/figures/final/
@@ -73,5 +84,6 @@ venv/
 /results/**/target_test_private.csv
 /results/**/*.npy
 /results/**/model.pt
-/results/**/predictions.csv
+/results/**/predictions*.csv
 /results/domain_adaptation/officehome_frozen/smoke*/
+/results/domain_adaptation/officehome_frozen/campaigns/smoke*/
