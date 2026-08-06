@@ -1,0 +1,34 @@
+{
+  "created_at_utc": "2026-08-06T01:43:58.493461+00:00",
+  "diagnostics": {
+    "effective_sample_size": 4364.999999999989,
+    "max_weight": 0.0002290950744558992,
+    "num_query_rows": 0,
+    "num_source_rows": 4365,
+    "num_training_rows": 4365,
+    "query_total_mass": 0.0,
+    "solver_runtime_seconds": 2.1923333406448364e-05,
+    "source_total_mass": 1.0,
+    "squared_l2_norm": 0.00022909507445589977,
+    "weight_sum": 1.0
+  },
+  "feature_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+  "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+  "query_ids_path": null,
+  "query_ids_sha256": null,
+  "reweight_lambda": null,
+  "sample_weights_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_art/seed_4/source_only_uniform/weights/sample_weights.csv",
+  "sample_weights_sha256": "sha256:5e903e6bffe14f415c1f002a10384c07d20b977707a2228ee09e172e79932b89",
+  "schema_version": 1,
+  "solver": {
+    "converged": true,
+    "solver": "closed_form_uniform"
+  },
+  "source_manifest_sha256": "sha256:c85cab49f7015ca4139d84c89dd6892fd40f68a0bd2e6b4742d051370787bf0d",
+  "status": "complete",
+  "target_geometry_rows": 1941,
+  "target_geometry_scope": "complete_target_pool_public",
+  "target_labels_loaded": false,
+  "target_public_sha256": "sha256:42aa450beb85af630aae7b5ec5902471e876ac4744f835de59fc9234eb72cf6d",
+  "weighting_method": "uniform"
+}

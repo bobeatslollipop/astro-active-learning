@@ -1,0 +1,41 @@
+{
+  "created_at_utc": "2026-08-06T01:34:23.079475+00:00",
+  "features": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/resnet50_imagenet1k_v1_l2.npy",
+  "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+  "folds": 3,
+  "grid": [
+    1e-05,
+    0.0001,
+    0.001,
+    0.01,
+    0.1
+  ],
+  "runtime": {
+    "Pillow": "12.1.1",
+    "created_at_utc": "2026-08-06T01:34:23.165338+00:00",
+    "cuda_available": true,
+    "cuda_device_count": 1,
+    "cuda_device_names": [
+      "NVIDIA RTX A5000"
+    ],
+    "cudnn": "91002",
+    "numpy": "1.26.4",
+    "pandas": "2.3.3",
+    "platform": "Linux-6.8.0-106-generic-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "scikit-learn": "1.7.2",
+    "torch": "2.10.0+cu128",
+    "torch_cuda": "12.8",
+    "torchvision": "0.25.0+cu128"
+  },
+  "schema_version": 1,
+  "seed": 0,
+  "selected_mean_validation_cross_entropy": 1.1806968479623927,
+  "selected_rho": 1e-05,
+  "selection_metric": "mean_validation_cross_entropy",
+  "selection_scope": "source_domain_only",
+  "source_manifest": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/tasks/clipart_to_art/seed_0/source_labeled.csv",
+  "source_manifest_sha256": "sha256:c85cab49f7015ca4139d84c89dd6892fd40f68a0bd2e6b4742d051370787bf0d",
+  "target_labels_loaded": false,
+  "tie_break": "larger_rho_within_absolute_1e-8"
+}

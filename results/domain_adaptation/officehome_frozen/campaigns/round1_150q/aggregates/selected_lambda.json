@@ -1,0 +1,35 @@
+{
+  "campaign_id": "officehome_round1_150q_lambda_calibration",
+  "common_pair_coverage": 12,
+  "common_valid_pairs": [
+    "art_to_clipart",
+    "art_to_product",
+    "art_to_real_world",
+    "clipart_to_art",
+    "clipart_to_product",
+    "clipart_to_real_world",
+    "product_to_art",
+    "product_to_clipart",
+    "product_to_real_world",
+    "real_world_to_art",
+    "real_world_to_clipart",
+    "real_world_to_product"
+  ],
+  "created_at_utc": "2026-08-06T01:45:27.372761+00:00",
+  "extra_scale_ot_computed": false,
+  "git_commit": "89dee303ccd9661a59fb968ffd5328286f407070",
+  "lambda_0_computed": false,
+  "lambda_grid": [
+    10.0,
+    100.0,
+    1000.0,
+    10000.0
+  ],
+  "required_pair_coverage": 12,
+  "schema_version": 1,
+  "selected_lambda": 10.0,
+  "selected_mean_heldout_cross_entropy": 1.3152032305427819,
+  "selection_metric": "mean_heldout_target_cross_entropy",
+  "selection_scope": "seed_0_equal_weighted_directed_pairs",
+  "status": "selected"
+}

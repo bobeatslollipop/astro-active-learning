@@ -1,0 +1,58 @@
+{
+  "counts_and_weights": {
+    "normalized_total_weight": 1.0,
+    "num_queried_target": 150,
+    "num_source": 4357,
+    "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/real_world_to_art/seed_2/wasserstein/query_ids.csv",
+    "sample_weights_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/real_world_to_art/seed_2/wasserstein_hard_voronoi/weights/sample_weights.csv",
+    "total_queried_target_weight": 0.27253992787224374,
+    "total_source_weight": 0.7274600721277563,
+    "weight_source": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/real_world_to_art/seed_2/wasserstein_hard_voronoi/weights/sample_weights.csv"
+  },
+  "evaluation": null,
+  "optimization": {
+    "accepted_iterations": 87,
+    "closure_evaluations": 180,
+    "device": "cuda",
+    "device_name": "NVIDIA RTX A5000",
+    "final_gradient_inf_norm": 1.1229476513108239e-05,
+    "final_l2_penalty": 0.17523503303527832,
+    "final_objective": 0.2541038691997528,
+    "final_weighted_cross_entropy": 0.07886884361505508,
+    "fit_seconds": 0.7371014207601547,
+    "initial_objective": 4.174387454986572,
+    "max_iter": 500,
+    "objective_not_above_zero_classifier": true,
+    "parameter_norm_squared": 35047.00388152451,
+    "status": "converged_objective",
+    "theoretical_norm_bound_satisfied": true,
+    "theoretical_norm_squared_bound": 834877.4539791273,
+    "tolerance": 1e-06,
+    "train_pipeline_seconds": 0.8272189795970917,
+    "zero_classifier_objective": 4.174387269895637
+  },
+  "parameter_norms": {
+    "W_frobenius_norm": 187.09633100843013,
+    "W_operator_norm": 38.38385690679396,
+    "bias_norm": 6.4781791198174155
+  },
+  "schema_version": 1,
+  "training": {
+    "source": {
+      "classes_present": 65,
+      "cross_entropy": 0.6778640661312489,
+      "macro_accuracy": 0.8096285336421756,
+      "num_examples": 4357,
+      "top1_accuracy": 0.828551755795272
+    },
+    "source_plus_queried": {
+      "classes_present": 65,
+      "cross_entropy": 0.6581087500863173,
+      "macro_accuracy": 0.8158399026744367,
+      "num_examples": 4507,
+      "top1_accuracy": 0.8342578211670735
+    },
+    "weighted_cross_entropy": 0.07886884361505508,
+    "weighted_objective": 0.2541038691997528
+  }
+}

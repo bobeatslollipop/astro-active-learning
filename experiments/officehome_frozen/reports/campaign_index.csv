@@ -1,0 +1,2 @@
+campaign_id,report,git_commit,status,completed_runs,expected_runs,selected_lambda,updated_at_utc
+officehome_round1_150q_lambda_calibration,experiments/officehome_frozen/reports/officehome_round1_campaign.md,89dee303ccd9661a59fb968ffd5328286f407070,complete,336,336,10.0,2026-08-06T01:45:27.380271+00:00

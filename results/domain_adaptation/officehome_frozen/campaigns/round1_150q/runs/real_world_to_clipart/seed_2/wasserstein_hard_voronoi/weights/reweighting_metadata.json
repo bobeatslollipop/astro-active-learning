@@ -1,0 +1,34 @@
+{
+  "created_at_utc": "2026-08-06T01:41:05.888769+00:00",
+  "diagnostics": {
+    "effective_sample_size": 297.1697616610616,
+    "max_weight": 0.012600229095074456,
+    "num_query_rows": 150,
+    "num_source_rows": 4357,
+    "num_training_rows": 4507,
+    "query_total_mass": 0.5844788087056128,
+    "solver_runtime_seconds": 0.01550666056573391,
+    "source_total_mass": 0.41552119129438714,
+    "squared_l2_norm": 0.0033650799274138623,
+    "weight_sum": 1.0
+  },
+  "feature_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+  "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+  "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/real_world_to_clipart/seed_2/wasserstein/query_ids.csv",
+  "query_ids_sha256": "sha256:47d2ecc38ce9d056269fdda0405b1f2871ceb721db3710128df7f37c45e2d2b4",
+  "reweight_lambda": null,
+  "sample_weights_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/real_world_to_clipart/seed_2/wasserstein_hard_voronoi/weights/sample_weights.csv",
+  "sample_weights_sha256": "sha256:172b254afff1179f79d9dd369f9b06c699cb0b3bf2b202e2ae0335632eb15a43",
+  "schema_version": 1,
+  "solver": {
+    "converged": true,
+    "solver": "nearest_support_voronoi_assignment"
+  },
+  "source_manifest_sha256": "sha256:cf707d3697b80a6783e4bf7210936e43ecc5333e0855432460d22b0e08210313",
+  "status": "complete",
+  "target_geometry_rows": 3492,
+  "target_geometry_scope": "complete_target_pool_public",
+  "target_labels_loaded": false,
+  "target_public_sha256": "sha256:31ff95639ba678bdc70de049c76ec925167a7e2256ae22bd24483342c39f1a43",
+  "weighting_method": "hard_voronoi"
+}

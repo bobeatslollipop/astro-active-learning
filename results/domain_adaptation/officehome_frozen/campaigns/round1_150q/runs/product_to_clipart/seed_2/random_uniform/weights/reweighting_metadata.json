@@ -1,0 +1,34 @@
+{
+  "created_at_utc": "2026-08-06T01:40:31.696982+00:00",
+  "diagnostics": {
+    "effective_sample_size": 4589.000000000016,
+    "max_weight": 0.00021791239921551526,
+    "num_query_rows": 150,
+    "num_source_rows": 4439,
+    "num_training_rows": 4589,
+    "query_total_mass": 0.03268685988232729,
+    "solver_runtime_seconds": 2.7138739824295044e-05,
+    "source_total_mass": 0.9673131401176722,
+    "squared_l2_norm": 0.00021791239921551458,
+    "weight_sum": 0.9999999999999997
+  },
+  "feature_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+  "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+  "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/product_to_clipart/seed_2/random/query_ids.csv",
+  "query_ids_sha256": "sha256:6206ad8cee516642658eb065ad35665a5d7274d1073793c5b2da7502092867ce",
+  "reweight_lambda": null,
+  "sample_weights_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/product_to_clipart/seed_2/random_uniform/weights/sample_weights.csv",
+  "sample_weights_sha256": "sha256:70b335ba5dfb5bab3a0750af629ad3d783f3bf0f93473cca783a6053ab9fd30f",
+  "schema_version": 1,
+  "solver": {
+    "converged": true,
+    "solver": "closed_form_uniform"
+  },
+  "source_manifest_sha256": "sha256:27c26a7ae900e59423ba865b30b4ee7d11d3205157909f91dbde3c7b5be1a9e0",
+  "status": "complete",
+  "target_geometry_rows": 3492,
+  "target_geometry_scope": "complete_target_pool_public",
+  "target_labels_loaded": false,
+  "target_public_sha256": "sha256:31ff95639ba678bdc70de049c76ec925167a7e2256ae22bd24483342c39f1a43",
+  "weighting_method": "uniform"
+}

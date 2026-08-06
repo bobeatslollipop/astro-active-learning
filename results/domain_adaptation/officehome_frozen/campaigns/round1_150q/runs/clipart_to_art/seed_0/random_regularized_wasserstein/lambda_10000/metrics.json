@@ -1,0 +1,91 @@
+{
+  "counts_and_weights": {
+    "normalized_total_weight": 1.0000000000000002,
+    "num_queried_target": 150,
+    "num_source": 4365,
+    "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/clipart_to_art/seed_0/random/query_ids.csv",
+    "sample_weights_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_art/seed_0/random_regularized_wasserstein/lambda_10000/weights/sample_weights.csv",
+    "total_queried_target_weight": 0.03860273457282666,
+    "total_source_weight": 0.9613972654271734,
+    "weight_source": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_art/seed_0/random_regularized_wasserstein/lambda_10000/weights/sample_weights.csv"
+  },
+  "evaluation": {
+    "model_sha256": "sha256:cb180c8152617a97ce1e8b7a285b77e28e57ef0aab1621bf84f98953c83f3e0f",
+    "predictions_sha256": "sha256:61928771c8e2340aaf74ee759f41c7d21463f6f515acab8661ff03702af7397f",
+    "predictions_transductive_sha256": "sha256:3296fe4215c585ee54e5484d04a2acf10602c620f115b68e118ef743c63044cf",
+    "protocol": "heldout",
+    "target_heldout": {
+      "classes_present": 65,
+      "cross_entropy": 1.5446133271740903,
+      "macro_accuracy": 0.5778663003663003,
+      "num_examples": 486,
+      "top1_accuracy": 0.6316872427983539
+    },
+    "target_test": {
+      "classes_present": 65,
+      "cross_entropy": 1.5446133271740903,
+      "macro_accuracy": 0.5778663003663003,
+      "num_examples": 486,
+      "top1_accuracy": 0.6316872427983539
+    },
+    "target_transductive_full": {
+      "classes_present": 65,
+      "cross_entropy": 1.4531068997479781,
+      "macro_accuracy": 0.5857101685334669,
+      "num_examples": 2427,
+      "top1_accuracy": 0.6440049443757726
+    },
+    "target_transductive_unqueried": {
+      "classes_present": 65,
+      "cross_entropy": 1.5244393362040287,
+      "macro_accuracy": 0.5618656877406786,
+      "num_examples": 2277,
+      "top1_accuracy": 0.6209925340360123
+    }
+  },
+  "optimization": {
+    "accepted_iterations": 127,
+    "closure_evaluations": 262,
+    "device": "cuda",
+    "device_name": "NVIDIA RTX A5000",
+    "final_gradient_inf_norm": 2.8969321647309698e-05,
+    "final_l2_penalty": 0.3901387155056,
+    "final_objective": 0.8450537919998169,
+    "final_weighted_cross_entropy": 0.4549151062965393,
+    "fit_seconds": 1.220155980437994,
+    "initial_objective": 4.1743879318237305,
+    "max_iter": 500,
+    "objective_not_above_zero_classifier": true,
+    "parameter_norm_squared": 78027.7372993479,
+    "status": "converged_objective",
+    "theoretical_norm_bound_satisfied": true,
+    "theoretical_norm_squared_bound": 834877.4539791273,
+    "tolerance": 1e-06,
+    "train_pipeline_seconds": 1.3055689260363579,
+    "zero_classifier_objective": 4.174387269895637
+  },
+  "parameter_norms": {
+    "W_frobenius_norm": 279.1019569683765,
+    "W_operator_norm": 59.79148842163188,
+    "bias_norm": 11.394512528861371
+  },
+  "schema_version": 1,
+  "training": {
+    "source": {
+      "classes_present": 65,
+      "cross_entropy": 0.46097211005131855,
+      "macro_accuracy": 0.9434792377332821,
+      "num_examples": 4365,
+      "top1_accuracy": 0.9441008018327606
+    },
+    "source_plus_queried": {
+      "classes_present": 65,
+      "cross_entropy": 0.4579591079461649,
+      "macro_accuracy": 0.9451556668022814,
+      "num_examples": 4515,
+      "top1_accuracy": 0.9457364341085271
+    },
+    "weighted_cross_entropy": 0.4549151062965393,
+    "weighted_objective": 0.8450537919998169
+  }
+}

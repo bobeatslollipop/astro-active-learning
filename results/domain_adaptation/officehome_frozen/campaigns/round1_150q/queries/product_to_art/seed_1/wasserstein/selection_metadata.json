@@ -1,0 +1,22 @@
+{
+  "budget": 150,
+  "created_at_utc": "2026-08-06T01:38:21.728236+00:00",
+  "elapsed_seconds": 0.14710318483412266,
+  "feature_dimension": 2048,
+  "feature_manifest": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/manifest.csv",
+  "feature_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+  "features": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/resnet50_imagenet1k_v1_l2.npy",
+  "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+  "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/product_to_art/seed_1/wasserstein/query_ids.csv",
+  "query_ids_sha256": "sha256:c828d41f890cb7948154c3e84ba26379594930ac19ed84f7520f41b9b350fbe4",
+  "schema_version": 1,
+  "seed": 1,
+  "selection_method": "wasserstein",
+  "selection_objective": "finite_pool_greedy_nearest_support_W1",
+  "source_manifest_sha256": "sha256:27c26a7ae900e59423ba865b30b4ee7d11d3205157909f91dbde3c7b5be1a9e0",
+  "source_support_rows": 4439,
+  "target_geometry_rows": 1941,
+  "target_geometry_scope": "complete_target_pool_public",
+  "target_labels_loaded": false,
+  "target_public_sha256": "sha256:fb9fece28a3197999dc8e80924953fae60a4d8b0b3e4e79256c60e0d75dfc5c2"
+}

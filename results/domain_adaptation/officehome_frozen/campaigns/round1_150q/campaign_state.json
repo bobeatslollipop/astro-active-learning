@@ -1,0 +1,19 @@
+{
+  "campaign_id": "officehome_round1_150q_lambda_calibration",
+  "command": "/home/bgg7950/astro-active-learning/experiments/officehome_frozen/scripts/run_officehome_campaign.py --stage full --device auto --campaign-root /home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q",
+  "completed_at_utc": "2026-08-06T01:45:27.382505+00:00",
+  "completed_runs": 336,
+  "current_lambda": 10.0,
+  "current_method": "random_regularized_wasserstein",
+  "current_pair": "real_world_to_product",
+  "current_seed": 4,
+  "git_commit": "89dee303ccd9661a59fb968ffd5328286f407070",
+  "hostname": "melange.cs.northwestern.edu",
+  "pid": 3935512,
+  "schema_version": 1,
+  "selected_lambda": 10.0,
+  "started_at_utc": "2026-08-06T01:33:26.703947+00:00",
+  "status": "complete",
+  "total_runs": 336,
+  "updated_at_utc": "2026-08-06T01:45:27.382571+00:00"
+}

@@ -1,0 +1,22 @@
+{
+  "budget": 150,
+  "created_at_utc": "2026-08-06T01:41:11.108360+00:00",
+  "elapsed_seconds": 0.08183043636381626,
+  "feature_dimension": 2048,
+  "feature_manifest": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/manifest.csv",
+  "feature_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+  "features": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/resnet50_imagenet1k_v1_l2.npy",
+  "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+  "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/real_world_to_product/seed_2/random/query_ids.csv",
+  "query_ids_sha256": "sha256:ec70f8e7e4d164c73bfcb824c908e972ad6ab5c5a567e6ece414e47c117aa9eb",
+  "schema_version": 1,
+  "seed": 2,
+  "selection_method": "random",
+  "selection_objective": "uniform_without_replacement",
+  "source_manifest_sha256": "sha256:cf707d3697b80a6783e4bf7210936e43ecc5333e0855432460d22b0e08210313",
+  "source_support_rows": 4357,
+  "target_geometry_rows": 3551,
+  "target_geometry_scope": "complete_target_pool_public",
+  "target_labels_loaded": false,
+  "target_public_sha256": "sha256:46ba81ef9d17bf633571a5b842905468c7bf3651204414ea4efa9a756a11adb3"
+}

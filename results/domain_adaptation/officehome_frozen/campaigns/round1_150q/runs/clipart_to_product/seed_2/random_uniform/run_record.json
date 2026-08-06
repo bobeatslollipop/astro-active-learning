@@ -1,0 +1,211 @@
+{
+  "artifacts": {
+    "metrics": {
+      "path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_product/seed_2/random_uniform/metrics.json",
+      "sha256": "sha256:1bb7060361297c63a89d591e44c8e8655de26d0f000c3d21d1a8839e74e6618e"
+    },
+    "model": {
+      "local_only": true,
+      "path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_product/seed_2/random_uniform/model.pt",
+      "sha256": "sha256:06bc173992c37b3403d553573148be16db0f33290f90b227ddabf920fb9ff5db"
+    },
+    "training_metrics": {
+      "path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_product/seed_2/random_uniform/training_metrics.json",
+      "sha256": "sha256:e193eb12da4b47ae2e7230505cbde008d1de1b5a4f4d35414b1cbb0262d193f5"
+    }
+  },
+  "campaign_id": "officehome_round1_150q_lambda_calibration",
+  "class_balancing": false,
+  "created_at_utc": "2026-08-06T01:40:02.573427+00:00",
+  "device_request": "auto",
+  "geometry_pool": "complete_target_pool_public",
+  "git_commit": "89dee303ccd9661a59fb968ffd5328286f407070",
+  "hashes": {
+    "feature_manifest": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+    "features": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+    "manifest_private": "sha256:d14717711d800c2a3adc5399424f554ce1666616093497409eb71f9502489a64",
+    "query_ids": "sha256:ec70f8e7e4d164c73bfcb824c908e972ad6ab5c5a567e6ece414e47c117aa9eb",
+    "rho_selection": "sha256:b303a7855ed21d139f3490f13196428abfae80d584ba9aafbc087e7d96f4f572",
+    "sample_weights": "sha256:88d2a1dd3c72fc160822d5f5f6c00f47e73e4e5abfb7c005009516077528fc85",
+    "task_metadata": "sha256:7b4022bfea738d1b171299abf17448bfd0ae88a12a27af5901a4b1ff19c1600b"
+  },
+  "method": "random_uniform",
+  "metrics": {
+    "counts_and_weights": {
+      "normalized_total_weight": 0.9999999999999998,
+      "num_queried_target": 150,
+      "num_source": 4365,
+      "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/clipart_to_product/seed_2/random/query_ids.csv",
+      "sample_weights_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_product/seed_2/random_uniform/weights/sample_weights.csv",
+      "total_queried_target_weight": 0.03322259136212625,
+      "total_source_weight": 0.9667774086378736,
+      "weight_source": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_product/seed_2/random_uniform/weights/sample_weights.csv"
+    },
+    "evaluation": {
+      "model_sha256": "sha256:06bc173992c37b3403d553573148be16db0f33290f90b227ddabf920fb9ff5db",
+      "predictions_sha256": "sha256:73d9ce1aac0d6a939c5daae88ff9f1bf5a7fd6bf5468d5d590b4b5e149c0fcb2",
+      "predictions_transductive_sha256": "sha256:1729029e1974d3240fff39dc1672f6c8e8b2d6d3ee9a3093ee7281cf92044622",
+      "protocol": "heldout",
+      "target_heldout": {
+        "classes_present": 65,
+        "cross_entropy": 1.258258387950424,
+        "macro_accuracy": 0.6511696028694124,
+        "num_examples": 888,
+        "top1_accuracy": 0.670045045045045
+      },
+      "target_test": {
+        "classes_present": 65,
+        "cross_entropy": 1.258258387950424,
+        "macro_accuracy": 0.6511696028694124,
+        "num_examples": 888,
+        "top1_accuracy": 0.670045045045045
+      },
+      "target_transductive_full": {
+        "classes_present": 65,
+        "cross_entropy": 1.1442982511104212,
+        "macro_accuracy": 0.6795554420299948,
+        "num_examples": 4439,
+        "top1_accuracy": 0.6997071412480288
+      },
+      "target_transductive_unqueried": {
+        "classes_present": 65,
+        "cross_entropy": 1.1706892330309395,
+        "macro_accuracy": 0.6711994277310807,
+        "num_examples": 4289,
+        "top1_accuracy": 0.6910701795290277
+      }
+    },
+    "optimization": {
+      "accepted_iterations": 123,
+      "closure_evaluations": 253,
+      "device": "cuda",
+      "device_name": "NVIDIA RTX A5000",
+      "final_gradient_inf_norm": 1.3106163351039868e-05,
+      "final_l2_penalty": 0.3884955048561096,
+      "final_objective": 0.8442476987838745,
+      "final_weighted_cross_entropy": 0.4557521939277649,
+      "fit_seconds": 1.1523399949073792,
+      "initial_objective": 4.174387454986572,
+      "max_iter": 500,
+      "objective_not_above_zero_classifier": true,
+      "parameter_norm_squared": 77699.10072556722,
+      "status": "converged_objective",
+      "theoretical_norm_bound_satisfied": true,
+      "theoretical_norm_squared_bound": 834877.4539791273,
+      "tolerance": 1e-06,
+      "train_pipeline_seconds": 1.2415528111159801,
+      "zero_classifier_objective": 4.174387269895637
+    },
+    "parameter_norms": {
+      "W_frobenius_norm": 278.4998553204083,
+      "W_operator_norm": 59.27193625116361,
+      "bias_norm": 11.701765340273214
+    },
+    "schema_version": 1,
+    "training": {
+      "source": {
+        "classes_present": 65,
+        "cross_entropy": 0.4580222697859763,
+        "macro_accuracy": 0.9412394201109449,
+        "num_examples": 4365,
+        "top1_accuracy": 0.9427262313860252
+      },
+      "source_plus_queried": {
+        "classes_present": 65,
+        "cross_entropy": 0.45575216198566476,
+        "macro_accuracy": 0.941376174614479,
+        "num_examples": 4515,
+        "top1_accuracy": 0.9428571428571428
+      },
+      "weighted_cross_entropy": 0.4557521939277649,
+      "weighted_objective": 0.8442476987838745
+    }
+  },
+  "pair": "clipart_to_product",
+  "protocol": "class_stratified_80_20_heldout_plus_full_target_transductive",
+  "query_budget": 150,
+  "reweight_lambda": null,
+  "reweighting": {
+    "created_at_utc": "2026-08-06T01:40:00.672851+00:00",
+    "diagnostics": {
+      "effective_sample_size": 4514.999999999984,
+      "max_weight": 0.00022148394241417493,
+      "num_query_rows": 150,
+      "num_source_rows": 4365,
+      "num_training_rows": 4515,
+      "query_total_mass": 0.03322259136212624,
+      "solver_runtime_seconds": 2.8312206268310547e-05,
+      "source_total_mass": 0.9667774086378734,
+      "squared_l2_norm": 0.00022148394241417577,
+      "weight_sum": 0.9999999999999997
+    },
+    "feature_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+    "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+    "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/clipart_to_product/seed_2/random/query_ids.csv",
+    "query_ids_sha256": "sha256:ec70f8e7e4d164c73bfcb824c908e972ad6ab5c5a567e6ece414e47c117aa9eb",
+    "reweight_lambda": null,
+    "sample_weights_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/runs/clipart_to_product/seed_2/random_uniform/weights/sample_weights.csv",
+    "sample_weights_sha256": "sha256:88d2a1dd3c72fc160822d5f5f6c00f47e73e4e5abfb7c005009516077528fc85",
+    "schema_version": 1,
+    "solver": {
+      "converged": true,
+      "solver": "closed_form_uniform"
+    },
+    "source_manifest_sha256": "sha256:c85cab49f7015ca4139d84c89dd6892fd40f68a0bd2e6b4742d051370787bf0d",
+    "status": "complete",
+    "target_geometry_rows": 3551,
+    "target_geometry_scope": "complete_target_pool_public",
+    "target_labels_loaded": false,
+    "target_public_sha256": "sha256:46ba81ef9d17bf633571a5b842905468c7bf3651204414ea4efa9a756a11adb3",
+    "weighting_method": "uniform"
+  },
+  "rho": 1e-05,
+  "run_runtime_seconds": 2.107611395418644,
+  "runtime": {
+    "Pillow": "12.1.1",
+    "created_at_utc": "2026-08-06T01:40:02.573447+00:00",
+    "cuda_available": true,
+    "cuda_device_count": 1,
+    "cuda_device_names": [
+      "NVIDIA RTX A5000"
+    ],
+    "cudnn": "91002",
+    "numpy": "1.26.4",
+    "pandas": "2.3.3",
+    "platform": "Linux-6.8.0-106-generic-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "scikit-learn": "1.7.2",
+    "torch": "2.10.0+cu128",
+    "torch_cuda": "12.8",
+    "torchvision": "0.25.0+cu128"
+  },
+  "schema_version": 1,
+  "seed": 2,
+  "selection": {
+    "budget": 150,
+    "created_at_utc": "2026-08-06T01:40:00.521107+00:00",
+    "elapsed_seconds": 0.08355577103793621,
+    "feature_dimension": 2048,
+    "feature_manifest": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/manifest.csv",
+    "feature_manifest_sha256": "sha256:e81686af4021ffcdff381b6aa37903d1fc2f147fbc930b2a8976330b295153a2",
+    "features": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/features/resnet50_imagenet1k_v1_l2.npy",
+    "features_sha256": "sha256:1a56b1e1dcd583803249ff5c6603f309c328b1ad3215c19f48a07d2bc49deb9e",
+    "query_ids_path": "/home/bgg7950/astro-active-learning/results/domain_adaptation/officehome_frozen/campaigns/round1_150q/queries/clipart_to_product/seed_2/random/query_ids.csv",
+    "query_ids_sha256": "sha256:ec70f8e7e4d164c73bfcb824c908e972ad6ab5c5a567e6ece414e47c117aa9eb",
+    "schema_version": 1,
+    "seed": 2,
+    "selection_method": "random",
+    "selection_objective": "uniform_without_replacement",
+    "source_manifest_sha256": "sha256:c85cab49f7015ca4139d84c89dd6892fd40f68a0bd2e6b4742d051370787bf0d",
+    "source_support_rows": 4365,
+    "target_geometry_rows": 3551,
+    "target_geometry_scope": "complete_target_pool_public",
+    "target_labels_loaded": false,
+    "target_public_sha256": "sha256:46ba81ef9d17bf633571a5b842905468c7bf3651204414ea4efa9a756a11adb3"
+  },
+  "selection_method": "random",
+  "source_domain": "clipart",
+  "status": "complete",
+  "target_domain": "product",
+  "weighting_method": "uniform"
+}
